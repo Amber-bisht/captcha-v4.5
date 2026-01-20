@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure Photo Captcha</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1>Secure Portal</h1>
+            <p>Please verify you are human to continue.</p>
+        </header>
+
+        <form id="protected-form">
+            <div class="form-group">
+                <input type="text" placeholder="Username" required>
+            </div>
+            <div class="form-group">
+                <input type="password" placeholder="Password" required>
+            </div>
+
+            <!-- Captcha Trigger -->
+            <button type="button" id="captcha-trigger-btn" class="primary-btn">I am not a robot</button>
+            <div id="captcha-status" class="status-msg"></div>
+
+            <button type="submit" id="submit-btn" disabled>Log In</button>
+        </form>
+    </div>
+
+    <!-- Captcha Modal -->
+    <div id="captcha-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="captcha-instruction">Select all images...</h3>
+            </div>
+            
+            <div class="captcha-grid" id="captcha-grid">
+                <!-- Images injected here -->
+            </div>
+
+            <div class="modal-footer">
+                <button id="refresh-captcha" class="icon-btn" title="Refresh">↻</button>
+                <button id="verify-captcha" class="verify-btn">Verify</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/fingerprint.js"></script>
+    <script src="/behaviorTracker.js"></script>
+    <script src="/script.js"></script>
+</body>
+</html>

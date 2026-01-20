@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Captcha Validation Lab</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            width: 350px;
+            text-align: center;
+        }
+        h2 {
+            margin-top: 0;
+            color: #333;
+        }
+        .captcha-container {
+            margin: 1.5rem 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            gap: 10px;
+        }
+        #captcha-img {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .refresh-btn {
+            background: none;
+            border: none;
+            color: #007bff;
+            cursor: pointer;
+            text-decoration: underline;
+            font-size: 0.9rem;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 1rem;
+        }
+        button[type="submit"] {
+            width: 100%;
+            padding: 10px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button[type="submit"]:hover {
+            background-color: #218838;
+        }
+        .message {
+            margin-top: 1rem;
+            font-weight: bold;
+        }
+        .success { color: #28a745; }
+        .error { color: #dc3545; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Captcha Verification</h2>
+    <div class="captcha-container">
+        <!-- SVG Captcha will be injected here -->
+        <div id="captcha-img"></div>
+        <button class="refresh-btn" onclick="fetchCaptcha()">Refresh Captcha</button>
+    </div>
+    
+    <input type="text" id="captcha-input" placeholder="Enter characters" autocomplete="off">
+    <button onclick="verifyCaptcha()">Submit</button>
+    
+    <div id="result-message" class="message"></div>
+</div>
+
+<script src="/fingerprint.js"></script>
+<script src="/behaviorTracker.js"></script>
+<script src="/script.js"></script>
+
+</body>
+</html>

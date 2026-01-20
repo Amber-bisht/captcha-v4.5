@@ -1,0 +1,238 @@
+# =====================================================
+# GITHUB ACTIONS - CI/CD PIPELINE
+# Deploy to VPS using Docker with Password Authentication
+# =====================================================
+
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+env:
+  DOCKER_REGISTRY: ghcr.io
+  IMAGE_NAME_SERVER: ${{ github.repository }}/captcha-server
+  IMAGE_NAME_IMAGE: ${{ github.repository }}/captcha-image
+
+jobs:
+  # =====================================================
+  # JOB 1: BUILD AND TEST
+  # =====================================================
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            captcha_server/package-lock.json
+            capcha-img/package-lock.json
+
+      # Build captcha_server
+      - name: Install dependencies (captcha_server)
+        working-directory: ./captcha_server
+        run: npm ci
+
+      - name: Build (captcha_server)
+        working-directory: ./captcha_server
+        run: npm run build
+
+      # Build capcha-img
+      - name: Install dependencies (capcha-img)
+        working-directory: ./capcha-img
+        run: npm ci
+
+      - name: Build (capcha-img)
+        working-directory: ./capcha-img
+        run: npm run build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            captcha_server/dist
+            capcha-img/dist
+          retention-days: 1
+
+  # =====================================================
+  # JOB 2: BUILD DOCKER IMAGES
+  # =====================================================
+  build-docker:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for captcha-server
+        id: meta-server
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_SERVER }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: Build and push captcha-server
+        uses: docker/build-push-action@v5
+        with:
+          context: ./captcha_server
+          file: ./captcha_server/Dockerfile
+          push: true
+          tags: ${{ steps.meta-server.outputs.tags }}
+          labels: ${{ steps.meta-server.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata for captcha-image
+        id: meta-image
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: Build and push captcha-image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./capcha-img
+          file: ./capcha-img/Dockerfile
+          push: true
+          tags: ${{ steps.meta-image.outputs.tags }}
+          labels: ${{ steps.meta-image.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # =====================================================
+  # JOB 3: DEPLOY TO VPS (Using Password Authentication)
+  # =====================================================
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: build-docker
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install sshpass
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Create deployment directory on VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            mkdir -p ~/captcha-system
+          EOF
+
+      - name: Copy docker-compose.yml to VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" scp -o StrictHostKeyChecking=no docker-compose.yml ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/captcha-system/
+
+      - name: Copy nginx config to VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            mkdir -p ~/captcha-system/nginx
+          EOF
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" scp -o StrictHostKeyChecking=no -r nginx/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/captcha-system/ || true
+
+      - name: Create .env file on VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            cat > ~/captcha-system/.env << 'ENVFILE'
+          NODE_ENV=production
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          SESSION_SECRET=${{ secrets.SESSION_SECRET }}
+          IPQUALITYSCORE_API_KEY=${{ secrets.IPQUALITYSCORE_API_KEY }}
+          ABUSEIPDB_API_KEY=${{ secrets.ABUSEIPDB_API_KEY }}
+          ENVFILE
+          EOF
+
+      - name: Login to GitHub Container Registry on VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          EOF
+
+      - name: Pull and deploy containers on VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            cd ~/captcha-system
+            
+            # Pull latest images
+            docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_SERVER }}:latest
+            docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_IMAGE }}:latest
+            
+            # Update docker-compose with correct image names
+            sed -i 's|build:|#build:|g' docker-compose.yml
+            sed -i '/captcha-server:/a\    image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_SERVER }}:latest' docker-compose.yml
+            sed -i '/captcha-image:/a\    image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_IMAGE }}:latest' docker-compose.yml
+            
+            # Stop existing containers
+            docker-compose down --remove-orphans || true
+            
+            # Start new containers
+            docker-compose up -d --force-recreate
+            
+            # Cleanup old images
+            docker image prune -f
+            
+            # Show status
+            docker-compose ps
+          EOF
+
+      - name: Health check
+        run: |
+          sleep 30
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            echo "=== Container Status ==="
+            docker-compose -f ~/captcha-system/docker-compose.yml ps
+            
+            echo "=== Health Checks ==="
+            curl -f http://localhost:3000/health || echo "captcha-server unhealthy"
+            curl -f http://localhost:3001/health || echo "captcha-image unhealthy"
+          EOF
+
+      - name: Notify on success
+        if: success()
+        run: echo "✅ Deployment successful!"
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "❌ Deployment failed!"
