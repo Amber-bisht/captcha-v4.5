@@ -219,8 +219,32 @@ jobs:
         run: |
           sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
             mkdir -p ~/captcha-system/nginx
+            mkdir -p ~/captcha-system/ssl
           EOF
           sshpass -p "${{ secrets.VPS_PASSWORD }}" scp -o StrictHostKeyChecking=no -r nginx/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/captcha-system/ || true
+
+      - name: Deploy Cloudflare Origin CA certificates
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            # Create SSL directory (inside nginx folder for docker-compose volume mount)
+            mkdir -p ~/captcha-system/nginx/ssl
+            
+            # Write Origin CA certificate (from GitHub secrets)
+            cat > ~/captcha-system/nginx/ssl/origin.pem << 'CERTFILE'
+          ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          CERTFILE
+            
+            # Write Origin CA private key (from GitHub secrets)
+            cat > ~/captcha-system/nginx/ssl/origin-key.pem << 'KEYFILE'
+          ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
+          KEYFILE
+            
+            # Set proper permissions
+            chmod 600 ~/captcha-system/nginx/ssl/origin-key.pem
+            chmod 644 ~/captcha-system/nginx/ssl/origin.pem
+            
+            echo "SSL certificates deployed to nginx/ssl/"
+          EOF
 
       - name: Create .env file on VPS
         run: |
@@ -231,6 +255,8 @@ jobs:
           SESSION_SECRET=${{ secrets.SESSION_SECRET }}
           IPQUALITYSCORE_API_KEY=${{ secrets.IPQUALITYSCORE_API_KEY }}
           ABUSEIPDB_API_KEY=${{ secrets.ABUSEIPDB_API_KEY }}
+          CAPTCHA_SITE_KEY=${{ secrets.CAPTCHA_SITE_KEY }}
+          CAPTCHA_SECRET_KEY=${{ secrets.CAPTCHA_SECRET_KEY }}
           ENVFILE
           EOF
 

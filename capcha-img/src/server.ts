@@ -20,13 +20,50 @@ import { SecureImageServer, SecureChallenge, createSecureImageMiddleware } from 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Allowed origins for CORS
+const ALLOWED_ORIGINS = [
+  'https://links.asprin.dev',
+  'https://www.links.asprin.dev',
+  // Development
+  'http://localhost:3000',
+  'http://localhost:3001',
+];
+
+// CAPTCHA Site Key (public) and Secret Key (private)
+const CAPTCHA_SITE_KEY = process.env.CAPTCHA_SITE_KEY || 'sk_captcha_asprin_default_site_key';
+const CAPTCHA_SECRET_KEY = process.env.CAPTCHA_SECRET_KEY || 'sk_captcha_asprin_default_secret_key';
+
+// Used success tokens store (prevent reuse)
+const usedSuccessTokens = new Set<string>();
+
 // Security headers
 app.use(helmet({
   crossOriginEmbedderPolicy: false, // Allow images
 }));
 
-// Middleware
-app.use(cors());
+// CORS - Strict origin whitelist
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, etc.) only in development
+    if (!origin) {
+      if (process.env.NODE_ENV !== 'production') {
+        return callback(null, true);
+      }
+      return callback(new Error('No origin header'), false);
+    }
+
+    if (ALLOWED_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn(`CORS blocked origin: ${origin}`);
+    return callback(new Error('Not allowed by CORS'), false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Captcha-Site-Key', 'Authorization'],
+}));
+
 app.use(express.json());
 app.use(cookieParser());
 
@@ -255,6 +292,103 @@ app.post(
     }
   }
 );
+
+// =====================================================
+// SERVER-SIDE TOKEN VERIFICATION (Like Cloudflare siteverify)
+// Backend calls this with secret key to verify user's token
+// =====================================================
+app.post('/api/siteverify', (req: Request, res: Response) => {
+  try {
+    const { secret, response: userToken, remoteip } = req.body;
+
+    // Validate secret key
+    if (!secret || secret !== CAPTCHA_SECRET_KEY) {
+      return res.status(401).json({
+        success: false,
+        'error-codes': ['invalid-secret'],
+        message: 'Invalid secret key',
+      });
+    }
+
+    // Validate token exists
+    if (!userToken) {
+      return res.status(400).json({
+        success: false,
+        'error-codes': ['missing-input-response'],
+        message: 'Missing captcha response token',
+      });
+    }
+
+    // Check if token has already been used (prevent replay)
+    if (usedSuccessTokens.has(userToken)) {
+      return res.status(400).json({
+        success: false,
+        'error-codes': ['token-already-used'],
+        message: 'This token has already been used',
+      });
+    }
+
+    // Verify the JWT token
+    const jwt = require('jsonwebtoken');
+    const JWT_SECRET = process.env.JWT_SECRET || 'default-jwt-secret';
+
+    try {
+      const decoded = jwt.verify(userToken, JWT_SECRET);
+
+      // Mark token as used (prevent reuse)
+      usedSuccessTokens.add(userToken);
+
+      // Clean up used token after expiry time (10 minutes)
+      setTimeout(() => {
+        usedSuccessTokens.delete(userToken);
+      }, 10 * 60 * 1000);
+
+      // Optionally verify IP if provided
+      if (remoteip && decoded.ip && decoded.ip !== remoteip && decoded.ip !== 'unknown') {
+        console.warn(`IP mismatch: token=${decoded.ip}, request=${remoteip}`);
+        // We log but don't fail - IPs can change due to proxies
+      }
+
+      return res.json({
+        success: true,
+        challenge_ts: new Date(decoded.timestamp).toISOString(),
+        hostname: 'captcha-p.asprin.dev',
+        'error-codes': [],
+      });
+    } catch (jwtError: any) {
+      if (jwtError.name === 'TokenExpiredError') {
+        return res.status(400).json({
+          success: false,
+          'error-codes': ['token-expired'],
+          message: 'Token has expired',
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        'error-codes': ['invalid-input-response'],
+        message: 'Invalid or malformed token',
+      });
+    }
+  } catch (error) {
+    console.error('Siteverify error:', error);
+    return res.status(500).json({
+      success: false,
+      'error-codes': ['internal-error'],
+      message: 'Internal server error',
+    });
+  }
+});
+
+// =====================================================
+// GET SITE KEY (Public endpoint for frontend)
+// =====================================================
+app.get('/api/sitekey', (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    siteKey: CAPTCHA_SITE_KEY,
+  });
+});
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
