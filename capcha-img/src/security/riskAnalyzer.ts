@@ -48,6 +48,7 @@ export interface ChallengeConfig {
     addImageDegradation: boolean;
     requireProofOfWork: boolean;
     powDifficulty: number;
+    recommendedChallenge: 'text' | 'spatial'; // NEW: Escalation logic
 }
 
 export class RiskAnalyzer {
@@ -280,13 +281,14 @@ export class RiskAnalyzer {
         switch (level) {
             case 'low':
                 return {
-                    skipCaptcha: false,  // Could be true for invisible checkbox flow
+                    skipCaptcha: false,
                     difficulty: 'easy',
                     gridSize: 9,
                     requireMultipleRounds: false,
                     addImageDegradation: false,
                     requireProofOfWork: false,
-                    powDifficulty: 0
+                    powDifficulty: 0,
+                    recommendedChallenge: 'text'
                 };
 
             case 'medium':
@@ -297,7 +299,8 @@ export class RiskAnalyzer {
                     requireMultipleRounds: false,
                     addImageDegradation: true,
                     requireProofOfWork: true,
-                    powDifficulty: 3
+                    powDifficulty: 3,
+                    recommendedChallenge: 'text'
                 };
 
             case 'high':
@@ -308,7 +311,8 @@ export class RiskAnalyzer {
                     requireMultipleRounds: true,
                     addImageDegradation: true,
                     requireProofOfWork: true,
-                    powDifficulty: 4
+                    powDifficulty: 4,
+                    recommendedChallenge: 'spatial'
                 };
 
             case 'critical':
@@ -319,7 +323,8 @@ export class RiskAnalyzer {
                     requireMultipleRounds: true,
                     addImageDegradation: true,
                     requireProofOfWork: true,
-                    powDifficulty: 5
+                    powDifficulty: 5,
+                    recommendedChallenge: 'spatial'
                 };
         }
     }

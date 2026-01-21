@@ -10,7 +10,8 @@ import { SecureImage, SecureChallenge } from './secureImageServer';
 interface StoredChallenge {
     challenge?: any;        // For image challenges
     textAnswer?: string;    // For dynamic text challenges
-    type: 'image' | 'text'; // Type of challenge
+    targetFrame?: number;   // For spatial rotation challenges
+    type: 'image' | 'text' | 'spatial';
     fingerprint: string;
     ip: string;
     expiresAt: number;
@@ -208,6 +209,31 @@ export class RedisStore {
         const key = REDIS_KEYS.RATE_LIMIT + identifier;
         const count = await redisClient.get(key);
         return count ? parseInt(count, 10) : 0;
+    }
+
+    // ==========================================
+    // PoW NONCE TRACKING
+    // ==========================================
+
+    /**
+     * Store a pre-issued PoW challenge
+     */
+    static async setPoWChallenge(nonce: string, difficulty: number): Promise<void> {
+        const key = `captcha:pow_pending:${nonce}`;
+        await redisClient.setex(key, 300, difficulty.toString()); // 5 min TTL
+    }
+
+    /**
+     * Get and delete (use once) a PoW challenge difficulty
+     */
+    static async consumePoWChallenge(nonce: string): Promise<number | null> {
+        const key = `captcha:pow_pending:${nonce}`;
+        const difficulty = await redisClient.get(key);
+        if (difficulty) {
+            await redisClient.del(key);
+            return parseInt(difficulty, 10);
+        }
+        return null;
     }
 
     // ==========================================
