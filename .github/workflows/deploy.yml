@@ -167,6 +167,19 @@ jobs:
             mkdir -p ~/captcha-system
           EOF
 
+      - name: Install Docker Compose plugin on VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            # Check if docker compose plugin is installed
+            if ! docker compose version &> /dev/null; then
+              echo "Installing Docker Compose plugin..."
+              sudo apt-get update
+              sudo apt-get install -y docker-compose-plugin
+            else
+              echo "Docker Compose plugin already installed: $(docker compose version)"
+            fi
+          EOF
+
       - name: Copy docker-compose.yml to VPS
         run: |
           sshpass -p "${{ secrets.VPS_PASSWORD }}" scp -o StrictHostKeyChecking=no docker-compose.yml ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/captcha-system/
