@@ -13,25 +13,26 @@ export class DynamicCaptchaGenerator {
     private height = 120;
 
     /**
-     * Generate a challenge based on the 20-Factor Dynamic System (Balanced for human & bot)
+     * Generate a challenge based on the 20-Factor Dynamic System
+     * Hardened for bots, but high-quality for humans
      */
     async generate(): Promise<CaptchaResult> {
         const id = crypto.randomBytes(16).toString('hex');
 
-        const isMath = Math.random() > 0.4; // 60% chance of math for complexity
+        const isMath = Math.random() > 0.4;
         let answer = '';
         let textToShow = '';
 
         if (isMath) {
-            const a = Math.floor(Math.random() * 30) + 5;
-            const b = Math.floor(Math.random() * 20) + 2;
+            const a = Math.floor(Math.random() * 40) + 10;
+            const b = Math.floor(Math.random() * 20) + 5;
             const op = Math.random() > 0.5 ? '+' : '-';
             const res = op === '+' ? (a + b) : (a - b);
             answer = res.toString();
             textToShow = `${a}${op}${b}=`;
         } else {
             const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz';
-            const length = Math.floor(Math.random() * 2) + 5; // 5-6 characters
+            const length = 5;
             for (let i = 0; i < length; i++) {
                 answer += chars.charAt(Math.floor(Math.random() * chars.length));
             }
@@ -50,40 +51,41 @@ export class DynamicCaptchaGenerator {
     }
 
     private generateSVG(text: string): string {
-        const bgColor1 = this.getRandomColor(10, 40);
-        const bgColor2 = this.getRandomColor(10, 40);
-        const textColor = this.getRandomColor(200, 255); // Variations of off-white
+        const bgColor = this.getRandomColor(15, 30);
+        const textColor = '#FFFFFF';
 
         let svgContent = `<svg width="${this.width}" height="${this.height}" xmlns="http://www.w3.org/2000/svg">`;
+
+        // Premium Dark Gradient
         svgContent += `
             <defs>
-                <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" style="stop-color:${bgColor1};stop-opacity:1" />
-                    <stop offset="100%" style="stop-color:${bgColor2};stop-opacity:1" />
+                <linearGradient id="premiumGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:${bgColor};stop-opacity:1" />
+                    <stop offset="50%" style="stop-color:#0a0a0a;stop-opacity:1" />
+                    <stop offset="100%" style="stop-color:${this.getRandomColor(10, 40)};stop-opacity:1" />
                 </linearGradient>
             </defs>
-            <rect width="100%" height="100%" fill="url(#bgGrad)" />
+            <rect width="100%" height="100%" fill="url(#premiumGrad)" />
         `;
 
-        // Background interference shapes
-        for (let i = 0; i < 8; i++) {
+        // Subtle elegant noise (Small dots)
+        for (let i = 0; i < 40; i++) {
             const x = Math.random() * this.width;
             const y = Math.random() * this.height;
-            const size = Math.random() * 30 + 5;
-            svgContent += `<circle cx="${x}" cy="${y}" r="${size / 2}" fill="${textColor}" fill-opacity="0.15" />`;
+            svgContent += `<circle cx="${x}" cy="${y}" r="0.8" fill="white" fill-opacity="0.2" />`;
         }
 
         const charArray = text.split('');
         const step = (this.width - 60) / charArray.length;
 
         charArray.forEach((char, i) => {
-            const fonts = ['Arial', 'Verdana', 'Times New Roman', 'Courier New', 'Georgia'];
+            const fonts = ['Arial', 'Verdana', 'Georgia', 'Trebuchet MS'];
             const font = fonts[Math.floor(Math.random() * fonts.length)];
-            const fontSize = Math.floor(Math.random() * 10) + 40;
-            const fontWeight = '800';
-            const rotation = Math.floor(Math.random() * 50) - 25; // Re-introduced moderate rotation
-            const offsetY = Math.floor(Math.random() * 16) - 8;
-            const offsetX = 30 + (i * step) + (Math.random() * 10 - 5);
+            const fontSize = 44 + Math.random() * 6;
+            const fontWeight = '900';
+            const rotation = Math.floor(Math.random() * 40) - 20;
+            const offsetY = Math.floor(Math.random() * 12) - 6;
+            const offsetX = 35 + (i * step);
 
             svgContent += `
                 <text 
@@ -99,11 +101,11 @@ export class DynamicCaptchaGenerator {
             `;
         });
 
-        // Cutting lines (Interference)
-        for (let i = 0; i < 5; i++) {
+        // Anti-OCR lines (Thin & Sharp)
+        for (let i = 0; i < 4; i++) {
             const y1 = Math.random() * this.height;
             const y2 = Math.random() * this.height;
-            svgContent += `<line x1="0" y1="${y1}" x2="${this.width}" y2="${y2}" stroke="${textColor}" stroke-opacity="0.4" stroke-width="1.5" />`;
+            svgContent += `<line x1="0" y1="${y1}" x2="${this.width}" y2="${y2}" stroke="white" stroke-opacity="0.3" stroke-width="1.2" />`;
         }
 
         svgContent += '</svg>';
@@ -111,14 +113,11 @@ export class DynamicCaptchaGenerator {
     }
 
     private async applyPostProcessing(svg: string): Promise<Buffer> {
-        let pipeline = sharp(Buffer.from(svg));
-
-        // Add very light blur to soften edges (makes OCR harder)
-        pipeline = pipeline.blur(0.4);
-
-        return pipeline
-            .affine([[1, 0.03], [0.03, 1]], { background: '#000000' }) // Very slight perspective warp
-            .jpeg({ quality: 85 })
+        return sharp(Buffer.from(svg))
+            .jpeg({
+                quality: 100, // Maximum Quality to avoid artifacts
+                chromaSubsampling: '4:4:4' // Professional color sharpnes
+            })
             .toBuffer();
     }
 
