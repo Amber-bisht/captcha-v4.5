@@ -49,8 +49,9 @@ export function extractFingerprint(req: Request): BrowserFingerprint {
 /**
  * Generate a SECURE server-side fingerprint
  * Uses ONLY non-spoofable information for security decisions
+ * Includes session entropy to prevent token harvesting
  */
-export function generateServerFingerprint(req: Request): string {
+export function generateServerFingerprint(req: Request, sessionEntropy?: string): string {
   // Extract IP - this comes from the connection, not headers
   const ip =
     (req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
@@ -61,7 +62,7 @@ export function generateServerFingerprint(req: Request): string {
   // User-Agent can be spoofed but adds some protection
   const userAgent = req.headers['user-agent'] || 'unknown';
 
-  // Accept headers are harder to spoof correctly
+  // Accept headers are harder to spoof correctly (browsers send these automatically)
   const acceptLanguage = req.headers['accept-language'] || 'unknown';
   const acceptEncoding = req.headers['accept-encoding'] || 'unknown';
   const accept = req.headers['accept'] || 'unknown';
@@ -75,6 +76,16 @@ export function generateServerFingerprint(req: Request): string {
   const tlsVersion = req.headers['x-tls-version'] || '';
   const tlsCipher = req.headers['x-tls-cipher'] || '';
 
+  // Additional headers that are hard to spoof correctly
+  const connection = req.headers['connection'] || '';
+  const cacheControl = req.headers['cache-control'] || '';
+  const upgradeInsecureRequests = req.headers['upgrade-insecure-requests'] || '';
+
+  // Sec-Fetch headers - browser security features, hard to fake correctly
+  const secFetchSite = req.headers['sec-fetch-site'] || '';
+  const secFetchMode = req.headers['sec-fetch-mode'] || '';
+  const secFetchDest = req.headers['sec-fetch-dest'] || '';
+
   // Create a hash using ONLY server-verified data
   const components = [
     ip,
@@ -87,9 +98,94 @@ export function generateServerFingerprint(req: Request): string {
     secChUaMobile,
     tlsVersion,
     tlsCipher,
+    connection,
+    cacheControl,
+    upgradeInsecureRequests,
+    secFetchSite,
+    secFetchMode,
+    secFetchDest,
   ].join('|');
 
-  return crypto.createHash('sha256').update(components).digest('hex');
+  // Base fingerprint (stable across requests)
+  const baseHash = crypto.createHash('sha256').update(components).digest('hex');
+
+  // If session entropy is provided, create a bound fingerprint
+  // This makes the fingerprint unique to this session, preventing token harvesting
+  if (sessionEntropy) {
+    return crypto.createHash('sha256').update(`${baseHash}:${sessionEntropy}`).digest('hex');
+  }
+
+  return baseHash;
+}
+
+/**
+ * Analyze fingerprint consistency
+ * Detects potential spoofing by checking header consistency
+ */
+export function analyzeFingerprint(req: Request): {
+  isConsistent: boolean;
+  suspicionScore: number;
+  anomalies: string[];
+} {
+  const anomalies: string[] = [];
+  let suspicionScore = 0;
+
+  const userAgent = (req.headers['user-agent'] || '').toLowerCase();
+  const secChUa = (req.headers['sec-ch-ua'] || '').toString().toLowerCase();
+  const secChUaPlatform = (req.headers['sec-ch-ua-platform'] || '').toString().toLowerCase();
+
+  // Check User-Agent and Client Hints consistency
+  if (userAgent.includes('chrome') && !secChUa.includes('chrome')) {
+    if (secChUa && !userAgent.includes('edge')) {
+      anomalies.push('UA claims Chrome but Sec-CH-UA disagrees');
+      suspicionScore += 30;
+    }
+  }
+
+  // Check platform consistency
+  if (userAgent.includes('windows') && secChUaPlatform && !secChUaPlatform.includes('windows')) {
+    anomalies.push('UA claims Windows but Sec-CH-UA-Platform disagrees');
+    suspicionScore += 30;
+  }
+
+  if (userAgent.includes('mac') && secChUaPlatform && !secChUaPlatform.includes('mac')) {
+    anomalies.push('UA claims Mac but Sec-CH-UA-Platform disagrees');
+    suspicionScore += 30;
+  }
+
+  // Missing Sec-Fetch headers in modern browsers is suspicious
+  const secFetchSite = req.headers['sec-fetch-site'];
+  const secFetchMode = req.headers['sec-fetch-mode'];
+
+  // Modern Chrome/Firefox/Edge always send these on POST requests
+  if (!secFetchSite && !secFetchMode) {
+    if (userAgent.includes('chrome/') || userAgent.includes('firefox/') || userAgent.includes('edg/')) {
+      const version = parseInt(userAgent.match(/(?:chrome|firefox|edg)\/(\d+)/)?.[1] || '0');
+      if (version > 80) {
+        anomalies.push('Modern browser missing Sec-Fetch headers');
+        suspicionScore += 25;
+      }
+    }
+  }
+
+  // Accept-Encoding should have standard values
+  const acceptEncoding = (req.headers['accept-encoding'] || '').toString();
+  if (acceptEncoding && !acceptEncoding.includes('gzip')) {
+    anomalies.push('Unusual Accept-Encoding (missing gzip)');
+    suspicionScore += 10;
+  }
+
+  // Accept-Language should exist for browsers
+  if (!req.headers['accept-language']) {
+    anomalies.push('Missing Accept-Language header');
+    suspicionScore += 15;
+  }
+
+  return {
+    isConsistent: anomalies.length === 0,
+    suspicionScore: Math.min(100, suspicionScore),
+    anomalies
+  };
 }
 
 /**

@@ -11,7 +11,7 @@ export function createRateLimiter(config: RateLimitConfig) {
     max: config.maxRequests,
     message: config.message || 'Too many requests, please try again later.',
     standardHeaders: config.standardHeaders ?? true,
-    legacyHeaders: config.legacyHeaders ?? false,
+    legacyHeaders: config.legacyHeaders ?? true,
     // Custom key generator to include fingerprint
     keyGenerator: (req: Request): string => {
       const ip = req.ip || req.socket.remoteAddress || 'unknown';

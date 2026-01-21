@@ -8,7 +8,7 @@ import jwt from 'jsonwebtoken';
 
 import { createSessionMiddleware } from './config/session';
 import redisClient, { initRedis } from './config/redis';
-import { fingerprintMiddleware, generateServerFingerprint } from './middleware/fingerprint';
+import { fingerprintMiddleware, generateServerFingerprint, analyzeFingerprint } from './middleware/fingerprint';
 import {
   challengeRateLimiter,
   verificationRateLimiter,
@@ -21,6 +21,8 @@ import { SpatialCaptchaGenerator } from './utils/spatialCaptcha';
 import RedisStore from './utils/redisStore';
 import { PoWManager } from './security/powManager';
 import { RiskAnalyzer } from './security/riskAnalyzer';
+import { deviceReputation } from './security/deviceReputation';
+import { SecurityLogger } from './utils/securityLogger';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -87,7 +89,7 @@ const botKiller = async (req: Request, res: Response, next: NextFunction) => {
       req.headers['sec-webdriver'] === 'true' ||
       ua.includes('headlesschrome')
     ) {
-      console.warn(`[BLOCKED] Headless browser from IP: ${req.ip}`);
+      SecurityLogger.warn('Blocked Headless Browser', { ip: req.ip, type: 'headless_browser_detected', details: ua });
       return res.status(403).json({ error: 'Security violation' });
     }
 
@@ -98,7 +100,7 @@ const botKiller = async (req: Request, res: Response, next: NextFunction) => {
   // Non-browser UA - check against bot list
   const isKnownBot = BOT_USER_AGENTS.some(pattern => ua.includes(pattern));
   if (isKnownBot) {
-    console.warn(`[BLOCKED] Bot UA: "${ua.substring(0, 60)}" from IP: ${req.ip}`);
+    SecurityLogger.warn('Blocked Known Bot', { ip: req.ip, type: 'bot_ua_detected', details: ua });
     return res.status(403).json({
       error: 'Access denied',
       code: 'BOT_DETECTED'
@@ -127,22 +129,33 @@ app.get('/api/init', botKiller, async (req: Request, res: Response) => {
     const risk = await RiskAnalyzer.calculateRiskScore(req);
 
     // ECONOMIC TAX: Datacenters/VPNs get much harder PoW
-    let difficultyAdjustment = 0;
-    if (risk.level === 'high') difficultyAdjustment = 1;
-    if (risk.level === 'critical') difficultyAdjustment = 2;
+    // Scrypt is now used for high risk, so simple difficulty adjustment logic 
+    // is replaced by RiskAnalyzer's recommendation
 
-    const challengeBoundary = PoWManager.generateChallenge(risk.score);
-    challengeBoundary.difficulty += difficultyAdjustment;
+    // Generate challenge based on recommendation (sha256 or scrypt)
+    const useScrypt = risk.challengeConfig.powAlgorithm === 'scrypt';
+    const challengeBoundary = PoWManager.generateChallenge(
+      risk.score,
+      useScrypt
+    );
 
-    await RedisStore.setPoWChallenge(challengeBoundary.nonce, challengeBoundary.difficulty);
+    // Store challenge params in Redis
+    await RedisStore.setPoWChallenge(challengeBoundary.nonce, {
+      difficulty: challengeBoundary.difficulty,
+      algorithm: challengeBoundary.algorithm,
+      scryptParams: challengeBoundary.scryptParams
+    });
 
     res.json({
       nonce: challengeBoundary.nonce,
       difficulty: challengeBoundary.difficulty,
+      algorithm: challengeBoundary.algorithm,
+      scryptParams: challengeBoundary.scryptParams,
       riskLevel: risk.level,
       recommendedChallenge: risk.challengeConfig.recommendedChallenge
     });
   } catch (err) {
+    console.error('Init error:', err);
     res.status(500).json({ error: 'Init failed' });
   }
 });
@@ -154,10 +167,19 @@ app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: 
   try {
     const { nonce, solution, type } = req.body;
 
-    const difficulty = await RedisStore.consumePoWChallenge(nonce);
-    if (difficulty === null) return res.status(403).json({ error: 'Invalid or expired nonce' });
+    // Retrieve challenge params from Redis
+    const challengeParams = await RedisStore.consumePoWChallenge(nonce);
+    if (!challengeParams) return res.status(403).json({ error: 'Invalid or expired nonce' });
 
-    const isValidPoW = PoWManager.verify(nonce, solution, difficulty);
+    // Verify PoW using stored params (algorithm, difficulty, etc.)
+    const isValidPoW = PoWManager.verify(
+      nonce,
+      solution,
+      challengeParams.difficulty,
+      challengeParams.algorithm,
+      challengeParams.scryptParams
+    );
+
     if (!isValidPoW) return res.status(403).json({ error: 'Security verification failed (PoW)' });
 
     const serverFingerprint = generateServerFingerprint(req);
@@ -222,50 +244,150 @@ app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: 
 });
 
 // =====================================================
-// 3. VERIFICATION
+// 3. VERIFICATION - With Device Reputation Tracking
 // =====================================================
 app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request, res: Response) => {
   try {
     const { sessionId, textAnswer, targetFrame, token, honeyPot } = req.body;
+    const serverFingerprint = generateServerFingerprint(req);
+    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
 
+    // ===== DEVICE REPUTATION CHECK =====
+    const deviceStatus = deviceReputation.evaluate(serverFingerprint);
+
+    // Block banned devices immediately
+    if (deviceStatus.isBanned) {
+      SecurityLogger.warn('Banned Device Verification Attempt', {
+        ip,
+        fingerprint: serverFingerprint,
+        type: 'device_banned_access'
+      });
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied',
+        code: 'DEVICE_BANNED'
+      });
+    }
+
+    // ===== FINGERPRINT CONSISTENCY CHECK =====
+    const fingerprintAnalysis = analyzeFingerprint(req);
+    if (!fingerprintAnalysis.isConsistent) {
+      // Record suspicious activity but don't block (could be legitimate edge cases)
+      deviceReputation.recordSuspiciousActivity(serverFingerprint, {
+        type: 'fingerprint_anomaly',
+        details: `Header inconsistencies: ${fingerprintAnalysis.anomalies.join(', ')}`,
+        severity: fingerprintAnalysis.suspicionScore > 50 ? 'high' : 'medium'
+      });
+      SecurityLogger.warn('Fingerprint Anomaly Detected', {
+        ip,
+        fingerprint: serverFingerprint,
+        type: 'fingerprint_anomaly',
+        details: fingerprintAnalysis.anomalies
+      });
+    }
+
+    // Honeypot triggered - record high severity suspicious activity
     if (honeyPot) {
-      // PERMANENT RATE LIMIT / REDIS BAN could go here
+      deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
+        type: 'honeypot_triggered',
+        details: `Honeypot field filled: ${typeof honeyPot === 'string' ? honeyPot.substring(0, 50) : 'non-string'}`,
+        severity: 'high'
+      });
+      SecurityLogger.warn('Honeypot Triggered', { ip, fingerprint: serverFingerprint, type: 'honeypot_triggered' });
       return res.status(403).json({ success: false, message: 'Violation tracked' });
     }
 
     const challengeId = sessionId;
-    if (!challengeId || !token) return res.status(400).json({ success: false, message: 'Missing fields' });
+    if (!challengeId || !token) {
+      deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
+        type: 'missing_fields',
+        details: `Missing: ${!challengeId ? 'sessionId' : ''} ${!token ? 'token' : ''}`,
+        severity: 'medium'
+      });
+      return res.status(400).json({ success: false, message: 'Missing fields' });
+    }
 
     const stored = await RedisStore.getChallenge(challengeId);
-    if (!stored || Date.now() > stored.expiresAt) return res.status(400).json({ success: false, message: 'Expired' });
-
-    const serverFingerprint = generateServerFingerprint(req);
-    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
+    if (!stored || Date.now() > stored.expiresAt) {
+      deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
+        type: 'expired_challenge',
+        details: 'Attempted to use expired or invalid challenge',
+        severity: 'low'
+      });
+      return res.status(400).json({ success: false, message: 'Expired' });
+    }
 
     const tokenVerification = await TokenService.verifyToken(token, serverFingerprint, ip);
-    if (!tokenVerification.valid) return res.status(400).json({ success: false, message: tokenVerification.error });
+    if (!tokenVerification.valid) {
+      // Token manipulation is highly suspicious
+      deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
+        type: 'token_invalid',
+        details: `Token verification failed: ${tokenVerification.error}`,
+        severity: 'high'
+      });
+      return res.status(400).json({ success: false, message: tokenVerification.error });
+    }
 
     let isCorrect = false;
     const solveTime = Date.now() - (stored.expiresAt - 300000);
+    let suspiciousActivity: { type: string; details: string; severity: 'low' | 'medium' | 'high' } | undefined;
 
     if (stored.type === 'spatial') {
       isCorrect = parseInt(targetFrame, 10) === stored.targetFrame;
       // 3D rotation requires at least 2.5s for a real human
-      if (solveTime < 2500) isCorrect = false;
+      if (solveTime < 2500) {
+        suspiciousActivity = {
+          type: 'timing_anomaly',
+          details: `Spatial CAPTCHA solved in ${solveTime}ms (min: 2500ms)`,
+          severity: 'high'
+        };
+        isCorrect = false;
+      }
     } else {
       isCorrect = textAnswer?.toLowerCase() === stored.textAnswer?.toLowerCase();
       // Text entry requires at least 1.5s
-      if (solveTime < 1500) isCorrect = false;
+      if (solveTime < 1500) {
+        suspiciousActivity = {
+          type: 'timing_anomaly',
+          details: `Text CAPTCHA solved in ${solveTime}ms (min: 1500ms)`,
+          severity: 'high'
+        };
+        isCorrect = false;
+      }
     }
 
     if (isCorrect) {
+      // SUCCESS - Record positive reputation
+      deviceReputation.recordChallengeAttempt(serverFingerprint, true, ip);
       await RedisStore.deleteChallenge(challengeId);
+
+      // Generate success token with additional binding
       const successToken = TokenService.generateSuccessToken(serverFingerprint, ip);
+
+      SecurityLogger.info('Challenge Solved', {
+        ip,
+        fingerprint: serverFingerprint,
+        type: 'challenge_success',
+        details: { challengeType: stored.type, time: solveTime }
+      });
       return res.json({ success: true, token: successToken.token });
     }
 
+    // FAILURE - Record negative reputation
+    deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, suspiciousActivity);
+
+    // Check if device should now be challenged more aggressively
+    const updatedStatus = deviceReputation.evaluate(serverFingerprint);
+    SecurityLogger.info('Challenge Failed', {
+      ip,
+      fingerprint: serverFingerprint,
+      type: 'challenge_failed',
+      details: { reputationAfter: updatedStatus.reputationScore }
+    });
+
     res.json({ success: false, message: 'Incorrect' });
   } catch (error) {
+    console.error('[CAPTCHA] Verification error:', error);
     res.status(500).json({ success: false, message: 'Internal error' });
   }
 });

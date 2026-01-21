@@ -24,6 +24,14 @@ interface ImageMapping {
     sessionId: string;
 }
 
+
+// Interface for PoW params
+export interface PoWChallengeParams {
+    difficulty: number;
+    algorithm: 'sha256' | 'scrypt';
+    scryptParams?: { N: number; r: number; p: number };
+}
+
 /**
  * RedisStore - Centralized Redis operations for CAPTCHA
  */
@@ -218,20 +226,27 @@ export class RedisStore {
     /**
      * Store a pre-issued PoW challenge
      */
-    static async setPoWChallenge(nonce: string, difficulty: number): Promise<void> {
+    static async setPoWChallenge(nonce: string, params: PoWChallengeParams | number): Promise<void> {
         const key = `captcha:pow_pending:${nonce}`;
-        await redisClient.setex(key, 300, difficulty.toString()); // 5 min TTL
+        const storedValue = typeof params === 'number'
+            ? JSON.stringify({ difficulty: params, algorithm: 'sha256' })
+            : JSON.stringify(params);
+        await redisClient.setex(key, 300, storedValue); // 5 min TTL
     }
 
     /**
-     * Get and delete (use once) a PoW challenge difficulty
+     * Get and delete (use once) a PoW challenge params
      */
-    static async consumePoWChallenge(nonce: string): Promise<number | null> {
+    static async consumePoWChallenge(nonce: string): Promise<PoWChallengeParams | null> {
         const key = `captcha:pow_pending:${nonce}`;
-        const difficulty = await redisClient.get(key);
-        if (difficulty) {
+        const data = await redisClient.get(key);
+        if (data) {
             await redisClient.del(key);
-            return parseInt(difficulty, 10);
+            // Handle legacy numeric values if any pending
+            if (!data.startsWith('{')) {
+                return { difficulty: parseInt(data, 10), algorithm: 'sha256' };
+            }
+            return JSON.parse(data);
         }
         return null;
     }

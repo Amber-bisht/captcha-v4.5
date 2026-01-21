@@ -6,6 +6,9 @@
 
 import { Request } from 'express';
 import crypto from 'crypto';
+import { deviceReputation } from './deviceReputation';
+import { ipReputation } from './ipReputation';
+import { PoWConfig } from './powManager';
 
 // Known datacenter IP ranges (partial list - use ipinfo.io for full)
 const DATACENTER_ASNS = new Set([
@@ -48,7 +51,13 @@ export interface ChallengeConfig {
     addImageDegradation: boolean;
     requireProofOfWork: boolean;
     powDifficulty: number;
-    recommendedChallenge: 'text' | 'spatial'; // NEW: Escalation logic
+    recommendedChallenge: 'text' | 'spatial';
+    powAlgorithm: 'sha256' | 'scrypt'; // NEW: Algorithm selection
+    scryptParams?: {
+        N: number;
+        r: number;
+        p: number;
+    };
 }
 
 export class RiskAnalyzer {
@@ -62,7 +71,7 @@ export class RiskAnalyzer {
         const factors: RiskFactor[] = [];
         let score = 0;
 
-        // 1. IP-based checks
+        // 1. IP-based checks (Enhanced with IP Reputation Service)
         const ipScore = await this.analyzeIP(req, factors);
         score += ipScore;
 
@@ -78,13 +87,25 @@ export class RiskAnalyzer {
         const tlsScore = this.analyzeTLSFingerprint(req, factors);
         score += tlsScore;
 
-        // 5. Behavioral analysis
+        // 5. Device Reputation Check (NEW)
+        if ((req as any).fingerprint?.hash) {
+            const deviceStatus = deviceReputation.evaluate((req as any).fingerprint.hash);
+            if (deviceStatus.reputationLevel === 'malicious') {
+                score += 50;
+                factors.push({ name: 'malicious_device', weight: 50, details: 'Device flagged as malicious' });
+            } else if (deviceStatus.reputationLevel === 'suspicious') {
+                score += 25;
+                factors.push({ name: 'suspicious_device', weight: 25, details: 'Device flagged as suspicious' });
+            }
+        }
+
+        // 6. Behavioral analysis
         if (behaviorData) {
             const behaviorScore = this.analyzeBehavior(behaviorData, factors);
             score += behaviorScore;
         }
 
-        // 6. Request timing patterns
+        // 7. Request timing patterns
         const timingScore = this.analyzeRequestTiming(req, factors);
         score += timingScore;
 
@@ -104,17 +125,29 @@ export class RiskAnalyzer {
     private static async analyzeIP(req: Request, factors: RiskFactor[]): Promise<number> {
         let score = 0;
         const ip = this.getClientIP(req);
+        const ua = req.headers['user-agent'];
 
-        // Check for datacenter IP (simplified - use real service in production)
-        if (this.isDatacenterIP(ip)) {
-            score += 35;
-            factors.push({ name: 'datacenter_ip', weight: 35, details: 'IP belongs to datacenter' });
-        }
+        // Use IP Reputation Service
+        const ipResult = await ipReputation.getReputation(ip, ua);
 
-        // Check for TOR exit node (would need tor exit list)
-        if (await this.isTorExitNode(ip)) {
-            score += 50;
-            factors.push({ name: 'tor_exit', weight: 50, details: 'TOR exit node detected' });
+        if (ipResult.riskScore > 0) {
+            // Apply IPQS/Local score (capped contribution)
+            const contribution = Math.min(ipResult.riskScore, 60);
+            score += contribution;
+            factors.push({ name: 'ip_reputation', weight: contribution, details: `Risk Score: ${ipResult.riskScore}` });
+
+            if (ipResult.isDatacenter) {
+                factors.push({ name: 'datacenter_ip', weight: 0, details: 'Datacenter/Hosting IP' });
+            }
+            if (ipResult.isTor) {
+                factors.push({ name: 'tor_exit', weight: 0, details: 'Tor Exit Node' });
+            }
+            if (ipResult.isProxy) {
+                factors.push({ name: 'proxy_detected', weight: 0, details: 'Proxy/VPN Detected' });
+            }
+            if (ipResult.isBot) {
+                factors.push({ name: 'bot_ip', weight: 0, details: 'Known Bot IP' });
+            }
         }
 
         // Check header consistency
@@ -277,18 +310,27 @@ export class RiskAnalyzer {
     /**
      * Get challenge configuration based on risk level
      */
+    /**
+     * Get challenge configuration based on risk level
+     * SECURITY: Always use spatial CAPTCHA - text CAPTCHA is ML-solvable
+     */
+    /**
+     * Get challenge configuration based on risk level
+     * SECURITY: Always use spatial CAPTCHA - text CAPTCHA is ML-solvable
+     */
     private static getChallengeConfig(level: 'low' | 'medium' | 'high' | 'critical'): ChallengeConfig {
         switch (level) {
             case 'low':
                 return {
                     skipCaptcha: false,
-                    difficulty: 'easy',
+                    difficulty: 'standard',
                     gridSize: 9,
                     requireMultipleRounds: false,
                     addImageDegradation: false,
-                    requireProofOfWork: false,
-                    powDifficulty: 0,
-                    recommendedChallenge: 'text'
+                    requireProofOfWork: true,
+                    powDifficulty: 4,
+                    powAlgorithm: 'sha256',
+                    recommendedChallenge: 'spatial'
                 };
 
             case 'medium':
@@ -299,8 +341,9 @@ export class RiskAnalyzer {
                     requireMultipleRounds: false,
                     addImageDegradation: true,
                     requireProofOfWork: true,
-                    powDifficulty: 3,
-                    recommendedChallenge: 'text'
+                    powDifficulty: 5,
+                    powAlgorithm: 'sha256',
+                    recommendedChallenge: 'spatial'
                 };
 
             case 'high':
@@ -311,7 +354,9 @@ export class RiskAnalyzer {
                     requireMultipleRounds: true,
                     addImageDegradation: true,
                     requireProofOfWork: true,
-                    powDifficulty: 4,
+                    powDifficulty: 6,
+                    powAlgorithm: 'scrypt', // GPU-Resistant
+                    scryptParams: { N: 16384, r: 8, p: 1 },
                     recommendedChallenge: 'spatial'
                 };
 
@@ -323,7 +368,9 @@ export class RiskAnalyzer {
                     requireMultipleRounds: true,
                     addImageDegradation: true,
                     requireProofOfWork: true,
-                    powDifficulty: 5,
+                    powDifficulty: 7,
+                    powAlgorithm: 'scrypt', // GPU-Resistant
+                    scryptParams: { N: 32768, r: 8, p: 2 }, // Harder Scrypt
                     recommendedChallenge: 'spatial'
                 };
         }
