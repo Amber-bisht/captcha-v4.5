@@ -107,9 +107,9 @@ export class DynamicCaptchaGenerator {
             const fontSize = Math.floor(Math.random() * 18) + 28;
 
             // 11. Individual Rotation, 12. Character Offset, 13. Kerning/Spacing
-            const rotation = Math.floor(Math.random() * 70) - 35;
-            const offsetY = Math.floor(Math.random() * 20) - 10;
-            const offsetX = 20 + (i * step) + (Math.random() * 10 - 5);
+            const rotation = Math.floor(Math.random() * 40) - 20;
+            const offsetY = Math.floor(Math.random() * 10) - 5;
+            const offsetX = 20 + (i * step) + (Math.random() * 6 - 3);
 
             // 7. Character Scaling (Horizontal/Vertical)
             const scaleX = 0.8 + Math.random() * 0.4;
@@ -139,9 +139,9 @@ export class DynamicCaptchaGenerator {
     private async applyPostProcessing(svg: string): Promise<Buffer> {
         let pipeline = sharp(Buffer.from(svg));
 
-        // 19. Gaussian Blur
-        if (Math.random() > 0.5) {
-            pipeline = pipeline.blur(0.5 + Math.random() * 0.5);
+        // 19. Gaussian Blur (Reduced)
+        if (Math.random() > 0.8) {
+            pipeline = pipeline.blur(0.3);
         }
 
         // 16. Salt & Pepper noise (simulated by adding noise and compositing)
@@ -150,9 +150,7 @@ export class DynamicCaptchaGenerator {
 
         // Final transformations using sharp
         return sharp(image)
-            // 15. Perspective (Approximate with affine)
-            .affine([[1, 0.05], [0.05, 1]], { background: '#000000' })
-            .jpeg({ quality: 80 })
+            .jpeg({ quality: 90 })
             .toBuffer();
     }
 
