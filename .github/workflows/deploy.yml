@@ -205,8 +205,30 @@ jobs:
         run: |
           sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
             mkdir -p ~/captcha-system/nginx
+            mkdir -p ~/captcha-system/nginx/ssl
           EOF
           sshpass -p "${{ secrets.VPS_PASSWORD }}" scp -o StrictHostKeyChecking=no -r nginx/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/captcha-system/ || true
+
+      - name: Deploy SSL certificates to VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+            # Create SSL directory
+            mkdir -p ~/captcha-system/nginx/ssl
+            
+            # Write Origin Certificate
+            cat > ~/captcha-system/nginx/ssl/origin.pem << 'CERTEOF'
+          ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          CERTEOF
+            
+            # Write Private Key
+            cat > ~/captcha-system/nginx/ssl/origin-key.pem << 'KEYEOF'
+          ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
+          KEYEOF
+            
+            # Set proper permissions
+            chmod 600 ~/captcha-system/nginx/ssl/origin-key.pem
+            chmod 644 ~/captcha-system/nginx/ssl/origin.pem
+          EOF
 
       - name: Create .env file on VPS
         run: |
