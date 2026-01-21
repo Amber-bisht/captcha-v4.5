@@ -7,6 +7,9 @@
 # =====================================================
 node_modules/
 */node_modules/
+link-secure-advance/
+*link-secure-advance
+
 
 # =====================================================
 # BUILD OUTPUT
