@@ -1,0 +1,29 @@
+{
+    "name": "captcha-security-tests",
+    "version": "1.0.0",
+    "description": "Security testing scripts for CAPTCHA system",
+    "main": "scripts/security_scanner.js",
+    "scripts": {
+        "scan": "node scripts/security_scanner.js",
+        "scan:full": "node scripts/security_scanner.js --full-flow",
+        "scan:verbose": "node scripts/security_scanner.js --verbose",
+        "test:flow": "bash scripts/test_captcha_flow.sh",
+        "test:headers": "bash scripts/test_security_headers.sh",
+        "test:rate-limit": "bash scripts/test_rate_limit.sh",
+        "test:timing": "bash scripts/test_timing_attack.sh",
+        "test:pow": "bash scripts/test_pow_difficulty.sh",
+        "test:token": "bash scripts/test_token_replay.sh",
+        "test:all": "npm run scan && npm run test:headers && npm run test:rate-limit"
+    },
+    "keywords": [
+        "captcha",
+        "security",
+        "testing",
+        "pentest"
+    ],
+    "author": "",
+    "license": "MIT",
+    "engines": {
+        "node": ">=16.0.0"
+    }
+}

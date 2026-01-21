@@ -9,13 +9,24 @@ export interface PoWChallenge {
 export class PoWManager {
     /**
      * Generate a new PoW challenge based on risk
+     * 
+     * Difficulty Guide (SHA-256 with leading zeros):
+     * - 3: ~8 iterations (~1ms) - TOO EASY
+     * - 4: ~65K iterations (~130ms) - Minimum acceptable
+     * - 5: ~1M iterations (~2s) - Good for suspicious users
+     * - 6: ~16M iterations (~33s) - High risk / datacenters
+     * - 7: ~268M iterations (~9min) - Critical / known attackers
      */
     static generateChallenge(riskScore: number): PoWChallenge {
-        // Difficulty scales: 1 (easy) to 6 (very hard)
-        // 3 is usually ~500ms on a modern laptop
-        let difficulty = 3;
-        if (riskScore > 50) difficulty = 4;
-        if (riskScore > 80) difficulty = 5;
+        // BASE DIFFICULTY: 4 (economic cost for all users)
+        // This provides ~130ms computational cost minimum
+        let difficulty = 4;
+
+        // Progressive scaling based on risk
+        if (riskScore > 30) difficulty = 5;   // ~2s for mildly suspicious
+        if (riskScore > 50) difficulty = 5;   // ~2s for medium risk
+        if (riskScore > 70) difficulty = 6;   // ~33s for high risk
+        if (riskScore > 90) difficulty = 7;   // ~9min for critical (effectively blocking)
 
         return {
             nonce: crypto.randomBytes(16).toString('hex'),

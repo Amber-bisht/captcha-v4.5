@@ -4,7 +4,8 @@ import { TokenPayload, TokenResponse, TokenVerificationResult } from '../types/t
 import RedisStore from './redisStore';
 
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
-const TOKEN_EXPIRATION_MINUTES = 10;
+// SECURITY: Reduced from 10 minutes to 90 seconds to minimize replay attack window
+const TOKEN_EXPIRATION_SECONDS = 90;
 
 export class TokenService {
   private static secret: string = JWT_SECRET;
@@ -31,12 +32,12 @@ export class TokenService {
     };
 
     const token = jwt.sign(payload, this.secret, {
-      expiresIn: `${TOKEN_EXPIRATION_MINUTES}m`,
+      expiresIn: `${TOKEN_EXPIRATION_SECONDS}s`,
     });
 
     return {
       token,
-      expiresIn: TOKEN_EXPIRATION_MINUTES * 60,
+      expiresIn: TOKEN_EXPIRATION_SECONDS,
     };
   }
 

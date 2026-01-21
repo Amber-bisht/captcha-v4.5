@@ -50,26 +50,109 @@ app.use(createSessionMiddleware());
 app.use(fingerprintMiddleware);
 
 // =====================================================
-// BOT KILLER MIDDLEWARE: Header Integrity & Jitter
+// BOT KILLER MIDDLEWARE: Aggressive Automation Detection
+// Purpose: Block bots, waste attacker resources
 // =====================================================
+const BOT_USER_AGENTS = [
+  // Automation tools
+  'python', 'python-requests', 'python-urllib', 'aiohttp', 'httpx',
+  'curl', 'wget', 'libcurl', 'httpie',
+  'node-fetch', 'axios', 'got/', 'superagent', 'request/',
+  'java/', 'apache-httpclient', 'okhttp',
+  'go-http-client', 'golang',
+  'php/', 'guzzle',
+  'ruby/', 'rest-client',
+  // Headless browsers
+  'headlesschrome', 'phantomjs', 'slimerjs', 'selenium',
+  'puppeteer', 'playwright', 'nightmare',
+  'chrome-lighthouse', 'pagespeed',
+  // Generic bots
+  'bot', 'crawler', 'spider', 'scraper', 'scraping',
+  'httpclient', 'http_request', 'http-client',
+  // Empty or minimal UAs (often bots)
+  ''
+];
+
+const REQUIRED_HEADERS = ['accept', 'accept-language', 'accept-encoding'];
+
 const botKiller = async (req: Request, res: Response, next: NextFunction) => {
-  const ua = req.headers['user-agent'] || '';
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
   const risk = await RiskAnalyzer.calculateRiskScore(req);
 
-  // 1. Instant block for obvious bot headers
-  if (req.headers['navigator-webdriver'] || req.headers['x-automation-id'] || ua.includes('HeadlessChrome')) {
-    console.warn(`[BLOCKED] Bot headers detected from IP: ${req.ip}`);
+  // 1. Block known automation User-Agents
+  const isKnownBot = BOT_USER_AGENTS.some(pattern => ua.includes(pattern));
+  if (isKnownBot) {
+    console.warn(`[BLOCKED] Bot UA detected: "${ua.substring(0, 50)}" from IP: ${req.ip}`);
+    // Return fake success to waste attacker's parsing time
+    return res.status(403).json({
+      error: 'Access denied',
+      code: 'BOT_DETECTED',
+      // Honeypot field to waste resources
+      _debug: 'Request logged. Multiple violations will result in permanent ban.'
+    });
+  }
+
+  // 2. Block requests with automation markers in headers
+  if (
+    req.headers['navigator-webdriver'] ||
+    req.headers['x-automation-id'] ||
+    req.headers['sec-webdriver'] ||
+    req.headers['x-puppeteer'] ||
+    ua.includes('HeadlessChrome')
+  ) {
+    console.warn(`[BLOCKED] Automation headers from IP: ${req.ip}`);
     return res.status(403).json({ error: 'Security violation' });
   }
 
-  // 2. Temporal Jitter: Waste attacker time for suspicious requests
-  if (risk.score > 40) {
-    const delay = Math.floor(Math.random() * 2000) + 500; // 0.5s to 2.5s delay
+  // 3. Block requests missing essential browser headers
+  const missingHeaders = REQUIRED_HEADERS.filter(h => !req.headers[h]);
+  if (missingHeaders.length > 0 && !ua.includes('curl') && !ua.includes('postman')) {
+    // Curl/Postman might be legitimate testing - let PoW handle them
+    // But actual bots without headers get blocked
+    if (missesImportantBrowserHeaders(req)) {
+      console.warn(`[BLOCKED] Missing browser headers from IP: ${req.ip}`);
+      return res.status(403).json({ error: 'Invalid request signature' });
+    }
+  }
+
+  // 4. Block if User-Agent doesn't match Accept header patterns
+  // Real browsers have specific patterns
+  if (ua && !ua.includes('mozilla') && !ua.includes('opera')) {
+    // Non-browser UA claiming to be a browser
+    if (req.headers['sec-fetch-mode']) {
+      console.warn(`[BLOCKED] Inconsistent browser identity from IP: ${req.ip}`);
+      return res.status(403).json({ error: 'Request validation failed' });
+    }
+  }
+
+  // 5. Temporal Jitter: Waste attacker time for suspicious requests
+  // Higher risk = longer delay (burns attacker resources)
+  if (risk.score > 20) {
+    const delay = Math.min(Math.floor(risk.score * 50), 5000); // 1s to 5s delay
     await new Promise(resolve => setTimeout(resolve, delay));
   }
 
   next();
 };
+
+// Helper: Check for important browser-specific headers
+function missesImportantBrowserHeaders(req: Request): boolean {
+  const headers = req.headers;
+
+  // Real browsers send sec-ch-ua headers in modern Chrome/Edge
+  if (!headers['sec-ch-ua'] && !headers['sec-fetch-mode']) {
+    // Could be Safari or Firefox, check other markers
+    const ua = (headers['user-agent'] || '').toLowerCase();
+    if (ua.includes('chrome') || ua.includes('edge')) {
+      return true; // Chrome/Edge should have sec-ch-ua
+    }
+  }
+
+  // All browsers send accept header
+  if (!headers['accept']) return true;
+
+  return false;
+}
 
 const secureImageServer = new SecureImageServer(path.join(__dirname, '../public/images'));
 const dynamicCaptchaGenerator = new DynamicCaptchaGenerator();
