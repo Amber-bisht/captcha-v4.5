@@ -127,6 +127,11 @@ app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: 
 
     if (targetType === 'spatial') {
       const challenge = await spatialGenerator.generate();
+
+      if (!challenge || !challenge.spriteSheet || challenge.spriteSheet.length < 1000) {
+        throw new Error('Spatial generation failed');
+      }
+
       const tokenResponse = TokenService.generateToken(challenge.id, serverFingerprint, ip);
       await RedisStore.setChallenge(challenge.id, {
         targetFrame: challenge.targetFrame,
@@ -145,6 +150,11 @@ app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: 
       };
     } else {
       const result = await dynamicCaptchaGenerator.generate();
+
+      if (!result || !result.image || result.image.length < 5000) {
+        throw new Error('Dynamic generation failed');
+      }
+
       const tokenResponse = TokenService.generateToken(result.id, serverFingerprint, ip);
       await RedisStore.setChallenge(result.id, {
         textAnswer: result.answer,
@@ -162,7 +172,8 @@ app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: 
     }
     res.json(challengeData);
   } catch (error) {
-    res.status(500).json({ error: 'Failed' });
+    console.error('Challenge generation error:', error);
+    res.status(500).json({ error: 'Security challenge unavailable. Please refresh.' });
   }
 });
 
