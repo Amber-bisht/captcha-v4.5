@@ -3,19 +3,20 @@ import cors from 'cors';
 import path from 'path';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
+
 import { createSessionMiddleware } from './config/session';
-import { fingerprintMiddleware } from './middleware/fingerprint';
+import redisClient, { initRedis } from './config/redis';
+import { fingerprintMiddleware, generateServerFingerprint } from './middleware/fingerprint';
 import {
   challengeRateLimiter,
   verificationRateLimiter,
 } from './middleware/rateLimiter';
-import {
-  csrfTokenMiddleware,
-  csrfVerificationMiddleware,
-} from './middleware/csrf';
 import { TokenService } from './utils/tokenService';
 import { BehaviorAnalyzer } from './utils/behaviorAnalyzer';
 import { SecureImageServer, SecureChallenge, createSecureImageMiddleware } from './utils/secureImageServer';
+import RedisStore from './utils/redisStore';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -32,9 +33,7 @@ const ALLOWED_ORIGINS = [
 // CAPTCHA Site Key (public) and Secret Key (private)
 const CAPTCHA_SITE_KEY = process.env.CAPTCHA_SITE_KEY || 'sk_captcha_asprin_default_site_key';
 const CAPTCHA_SECRET_KEY = process.env.CAPTCHA_SECRET_KEY || 'sk_captcha_asprin_default_secret_key';
-
-// Used success tokens store (prevent reuse)
-const usedSuccessTokens = new Set<string>();
+const JWT_SECRET = process.env.JWT_SECRET || 'default-jwt-secret';
 
 // Security headers
 app.use(helmet({
@@ -87,21 +86,8 @@ app.use(createSessionMiddleware());
 // Fingerprint middleware (must be before routes)
 app.use(fingerprintMiddleware);
 
-// CSRF protection is disabled for cross-domain CAPTCHA compatibility.
-// Security is maintained via JWT tokens, fingerprinting, and IP verification.
-
 // Initialize secure image server
 const secureImageServer = new SecureImageServer(path.join(__dirname, '../public/images'));
-
-// In-memory store for challenges (use Redis in production)
-const challengeStore = new Map<
-  string,
-  {
-    challenge: SecureChallenge;
-    fingerprint: string;
-    ip: string;
-  }
->();
 
 // =====================================================
 // SECURE IMAGE ENDPOINT - Serves images with random IDs
@@ -111,7 +97,7 @@ app.get('/api/image/:imageId', createSecureImageMiddleware(secureImageServer));
 // =====================================================
 // CAPTCHA CHALLENGE ENDPOINT
 // =====================================================
-app.get('/api/captcha', challengeRateLimiter, (req: Request, res: Response) => {
+app.get('/api/captcha', challengeRateLimiter, async (req: Request, res: Response) => {
   try {
     // Check for headless browser
     const userAgent = req.headers['user-agent'] || '';
@@ -128,7 +114,7 @@ app.get('/api/captcha', challengeRateLimiter, (req: Request, res: Response) => {
     }
 
     // Generate SECURE challenge (with randomized image IDs)
-    const challenge = secureImageServer.generateSecureChallenge(9);
+    const challenge = await secureImageServer.generateSecureChallenge(9);
 
     if (!challenge) {
       return res.status(500).json({
@@ -136,28 +122,26 @@ app.get('/api/captcha', challengeRateLimiter, (req: Request, res: Response) => {
       });
     }
 
-    // Get fingerprint and IP
-    const fingerprint = req.fingerprint?.hash || 'unknown';
+    // Generate SERVER-SIDE fingerprint (not client-provided)
+    const serverFingerprint = generateServerFingerprint(req);
     const ip = req.fingerprint?.components.ip || 'unknown';
 
-    // Generate token
+    // Generate token with server-generated fingerprint
     const tokenResponse = TokenService.generateToken(
       challenge.sessionId,
-      fingerprint,
+      serverFingerprint,
       ip
     );
 
-    // Store challenge
-    challengeStore.set(challenge.sessionId, {
+    // Store challenge data in Redis
+    await RedisStore.setChallenge(challenge.sessionId, {
       challenge,
-      fingerprint,
+      fingerprint: serverFingerprint,
       ip,
     });
 
-    // Clean up expired challenges periodically
-    setTimeout(() => {
-      challengeStore.delete(challenge.sessionId);
-    }, 5 * 60 * 1000);
+    // Store server fingerprint for verification
+    await RedisStore.setServerFingerprint(challenge.sessionId, serverFingerprint);
 
     // Return challenge with SECURE image URLs (random IDs, not real filenames)
     res.json({
@@ -187,7 +171,7 @@ app.get('/api/captcha', challengeRateLimiter, (req: Request, res: Response) => {
 app.post(
   '/api/verify',
   verificationRateLimiter,
-  (req: Request, res: Response) => {
+  async (req: Request, res: Response) => {
     try {
       const { sessionId, selectedImages, token, behaviorData } = req.body;
 
@@ -199,8 +183,8 @@ app.post(
         });
       }
 
-      // Get challenge from store
-      const stored = challengeStore.get(sessionId);
+      // Get challenge from Redis
+      const stored = await RedisStore.getChallenge(sessionId);
       if (!stored) {
         return res.status(400).json({
           success: false,
@@ -210,21 +194,24 @@ app.post(
 
       // Check if challenge is expired
       if (Date.now() > stored.challenge.expiresAt) {
-        challengeStore.delete(sessionId);
+        await RedisStore.deleteChallenge(sessionId);
         return res.status(400).json({
           success: false,
           message: 'Challenge expired',
         });
       }
 
-      // Get fingerprint and IP
-      const fingerprint = req.fingerprint?.hash || 'unknown';
+      // Get SERVER-SIDE fingerprint (not client-provided)
+      const serverFingerprint = await RedisStore.getServerFingerprint(sessionId);
       const ip = req.fingerprint?.components.ip || 'unknown';
 
-      // Verify token
-      const tokenVerification = TokenService.verifyToken(
+      // Use stored server fingerprint for verification
+      const expectedFingerprint = serverFingerprint || stored.fingerprint;
+
+      // Verify token with server-generated fingerprint
+      const tokenVerification = await TokenService.verifyToken(
         token,
-        fingerprint,
+        expectedFingerprint,
         ip
       );
 
@@ -235,8 +222,8 @@ app.post(
         });
       }
 
-      // Verify fingerprint and IP match
-      if (stored.fingerprint !== fingerprint || stored.ip !== ip) {
+      // Verify IP matches
+      if (stored.ip !== ip) {
         return res.status(400).json({
           success: false,
           message: 'Request origin mismatch',
@@ -247,7 +234,7 @@ app.post(
       if (behaviorData) {
         const behaviorScore = BehaviorAnalyzer.analyzeBehavior(behaviorData);
         if (behaviorScore.riskLevel === 'high') {
-          challengeStore.delete(sessionId);
+          await RedisStore.deleteChallenge(sessionId);
           return res.json({
             success: false,
             message: 'Suspicious behavior detected',
@@ -256,15 +243,15 @@ app.post(
       }
 
       // Verify answer using SECURE image IDs
-      const result = secureImageServer.verifyAnswers(sessionId, selectedImages);
+      const result = await secureImageServer.verifyAnswers(sessionId, selectedImages);
 
       if (result.correct) {
-        // Correct
-        challengeStore.delete(sessionId); // Clear session to prevent replay
+        // Correct - clear session to prevent replay
+        await RedisStore.deleteChallenge(sessionId);
 
         // Generate success token
         const successToken = TokenService.generateSuccessToken(
-          fingerprint,
+          expectedFingerprint,
           ip
         );
 
@@ -293,7 +280,7 @@ app.post(
 // SERVER-SIDE TOKEN VERIFICATION (Like Cloudflare siteverify)
 // Backend calls this with secret key to verify user's token
 // =====================================================
-app.post('/api/siteverify', (req: Request, res: Response) => {
+app.post('/api/siteverify', async (req: Request, res: Response) => {
   try {
     const { secret, response: userToken, remoteip } = req.body;
 
@@ -315,8 +302,9 @@ app.post('/api/siteverify', (req: Request, res: Response) => {
       });
     }
 
-    // Check if token has already been used (prevent replay)
-    if (usedSuccessTokens.has(userToken)) {
+    // Check if token has already been used (prevent replay) - NOW USES REDIS
+    const tokenUsed = await RedisStore.isTokenUsed(userToken);
+    if (tokenUsed) {
       return res.status(400).json({
         success: false,
         'error-codes': ['token-already-used'],
@@ -325,19 +313,11 @@ app.post('/api/siteverify', (req: Request, res: Response) => {
     }
 
     // Verify the JWT token
-    const jwt = require('jsonwebtoken');
-    const JWT_SECRET = process.env.JWT_SECRET || 'default-jwt-secret';
-
     try {
-      const decoded = jwt.verify(userToken, JWT_SECRET);
+      const decoded = jwt.verify(userToken, JWT_SECRET) as any;
 
-      // Mark token as used (prevent reuse)
-      usedSuccessTokens.add(userToken);
-
-      // Clean up used token after expiry time (10 minutes)
-      setTimeout(() => {
-        usedSuccessTokens.delete(userToken);
-      }, 10 * 60 * 1000);
+      // Mark token as used in Redis (with automatic TTL expiration)
+      await RedisStore.markTokenUsed(userToken);
 
       // Optionally verify IP if provided
       if (remoteip && decoded.ip && decoded.ip !== remoteip && decoded.ip !== 'unknown') {
@@ -387,15 +367,33 @@ app.get('/api/sitekey', (req: Request, res: Response) => {
 });
 
 // Health check endpoint
-app.get('/health', (req: Request, res: Response) => {
+app.get('/health', async (req: Request, res: Response) => {
+  const redisStatus = redisClient.status === 'ready' ? 'connected' : 'disconnected';
+
   res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     service: 'captcha-image-secure',
+    redis: redisStatus,
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Secure Image CAPTCHA Server running at http://localhost:${PORT}`);
-});
+// =====================================================
+// START SERVER
+// =====================================================
+async function startServer() {
+  // Initialize Redis connection
+  const redisConnected = await initRedis();
+  if (!redisConnected) {
+    console.warn('⚠️  Redis not connected - falling back to degraded mode');
+    // Continue without Redis for development, but log warning
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Secure Image CAPTCHA Server running at http://localhost:${PORT}`);
+    console.log(`Redis status: ${redisClient.status}`);
+  });
+}
+
+startServer();

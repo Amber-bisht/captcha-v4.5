@@ -1,13 +1,13 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { TokenPayload, TokenResponse, TokenVerificationResult } from '../types/token';
+import RedisStore from './redisStore';
 
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 const TOKEN_EXPIRATION_MINUTES = 10;
 
 export class TokenService {
   private static secret: string = JWT_SECRET;
-  private static usedNonces: Set<string> = new Set();
 
   /**
    * Generate a JWT token for a challenge
@@ -40,17 +40,19 @@ export class TokenService {
 
   /**
    * Verify a JWT token
+   * UPDATED: Uses Redis for nonce tracking instead of in-memory Set
    */
-  static verifyToken(
+  static async verifyToken(
     token: string,
     expectedFingerprint: string,
     expectedIp: string
-  ): TokenVerificationResult {
+  ): Promise<TokenVerificationResult> {
     try {
       const decoded = jwt.verify(token, this.secret) as TokenPayload;
 
-      // Check if nonce has been used (replay attack prevention)
-      if (this.usedNonces.has(decoded.nonce)) {
+      // Check if nonce has been used (replay attack prevention) - NOW USES REDIS
+      const nonceUsed = await RedisStore.isNonceUsed(decoded.nonce);
+      if (nonceUsed) {
         return {
           valid: false,
           error: 'Token has already been used',
@@ -73,11 +75,8 @@ export class TokenService {
         };
       }
 
-      // Mark nonce as used and schedule cleanup
-      this.usedNonces.add(decoded.nonce);
-      setTimeout(() => {
-        this.usedNonces.delete(decoded.nonce);
-      }, TOKEN_EXPIRATION_MINUTES * 60 * 1000);
+      // Mark nonce as used in Redis (with automatic TTL expiration)
+      await RedisStore.markNonceUsed(decoded.nonce);
 
       return {
         valid: true,

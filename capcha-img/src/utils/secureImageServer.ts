@@ -1,12 +1,16 @@
 /**
  * Secure Image Serving System
  * Prevents image CAPTCHA bypass through filename/size/metadata analysis
+ * 
+ * UPDATED: Uses Redis for storage instead of in-memory Maps
+ * FIXED: Stores targetCategory explicitly to prevent multi-user bugs
  */
 
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
+import RedisStore from './redisStore';
 
 export interface SecureImage {
     id: string;           // Random ID (sent to client)
@@ -19,13 +23,10 @@ export interface SecureChallenge {
     question: string;
     imageIds: string[];   // Only random IDs sent to client
     validAnswerIds: string[];
+    targetCategory: string;  // FIXED: Store target category explicitly
     createdAt: number;
     expiresAt: number;
 }
-
-// In-memory mapping (use Redis in production)
-const imageIdToFile = new Map<string, { file: string; category: string; sessionId: string }>();
-const sessionImages = new Map<string, Map<string, SecureImage>>();
 
 export class SecureImageServer {
     private imagesDir: string;
@@ -64,12 +65,26 @@ export class SecureImageServer {
         });
 
         console.log(`Loaded ${files.length} images in ${this.categories.size} categories`);
+
+        // Log category breakdown
+        this.categories.forEach((images, category) => {
+            console.log(`  - ${category}: ${images.length} images`);
+        });
+    }
+
+    /**
+     * Reload categories (call when adding new images)
+     */
+    public reloadCategories(): void {
+        this.categories.clear();
+        this.loadCategories();
     }
 
     /**
      * Generate a secure challenge with randomized image IDs
+     * FIXED: Now stores targetCategory explicitly in Redis
      */
-    generateSecureChallenge(gridSize: number = 9): SecureChallenge | null {
+    async generateSecureChallenge(gridSize: number = 9): Promise<SecureChallenge | null> {
         const categoryList = Array.from(this.categories.keys());
         if (categoryList.length < 2) {
             console.error('Need at least 2 categories for challenge');
@@ -112,47 +127,50 @@ export class SecureImageServer {
         // Generate random IDs for each image (SECURITY: hide real filenames)
         const imageMap = new Map<string, SecureImage>();
         const allImages: SecureImage[] = [];
+        const imageIds: string[] = [];
 
-        [...selectedCorrect, ...selectedDistractors].forEach(file => {
+        for (const file of [...selectedCorrect, ...selectedDistractors]) {
             const id = crypto.randomBytes(8).toString('hex');
             const category = file.split('_')[0].toLowerCase();
             const secureImage: SecureImage = { id, originalFile: file, category };
             imageMap.set(id, secureImage);
             allImages.push(secureImage);
+            imageIds.push(id);
 
-            // Store mapping for image serving
-            imageIdToFile.set(id, { file, category, sessionId });
-        });
+            // Store mapping in Redis
+            await RedisStore.setImageMapping(id, { file, category, sessionId });
+        }
 
-        // Store session data
-        sessionImages.set(sessionId, imageMap);
+        // Store session data in Redis with explicit targetCategory
+        await RedisStore.setSessionImages(sessionId, imageMap, targetCategory);
 
-        // Shuffle all images
+        // Shuffle all images for display
         const shuffledAll = this.shuffleArray(allImages);
 
-        // Schedule cleanup
-        setTimeout(() => {
-            this.cleanupSession(sessionId);
-        }, 5 * 60 * 1000); // 5 minutes
+        // Calculate valid answer IDs
+        const validAnswerIds = selectedCorrect.map(file => {
+            const found = allImages.find(img => img.originalFile === file);
+            return found?.id || '';
+        }).filter(id => id !== '');
 
-        return {
+        const challenge: SecureChallenge = {
             sessionId,
             question: `Select all images containing a ${targetCategory}`,
             imageIds: shuffledAll.map(img => img.id),
-            validAnswerIds: selectedCorrect.map(file => {
-                const found = allImages.find(img => img.originalFile === file);
-                return found?.id || '';
-            }),
+            validAnswerIds,
+            targetCategory,  // FIXED: Stored explicitly
             createdAt: now,
             expiresAt: now + 5 * 60 * 1000,
         };
+
+        return challenge;
     }
 
     /**
      * Serve an image by its random ID with transformations to prevent fingerprinting
      */
     async serveImage(imageId: string): Promise<Buffer | null> {
-        const mapping = imageIdToFile.get(imageId);
+        const mapping = await RedisStore.getImageMapping(imageId);
         if (!mapping) {
             return null;
         }
@@ -167,11 +185,11 @@ export class SecureImageServer {
             const image = sharp(filePath);
 
             // 1. Resize to standard dimensions (normalize sizes)
+            // 2. Fixed quality to ensure consistent file sizes
+            // 3. Strip all metadata (EXIF, etc.)
             const processed = await image
                 .resize(200, 200, { fit: 'cover' })
-                // 2. Add slight random quality variation (prevents exact hash matching)
-                .jpeg({ quality: 75 + Math.floor(Math.random() * 10) })
-                // 3. Strip all metadata (EXIF, etc.)
+                .jpeg({ quality: 80, chromaSubsampling: '4:4:4' })
                 .rotate(0) // Force metadata strip
                 .toBuffer();
 
@@ -186,7 +204,7 @@ export class SecureImageServer {
      * Serve image with additional noise for extra security
      */
     async serveImageWithNoise(imageId: string): Promise<Buffer | null> {
-        const mapping = imageIdToFile.get(imageId);
+        const mapping = await RedisStore.getImageMapping(imageId);
         if (!mapping) {
             return null;
         }
@@ -205,7 +223,7 @@ export class SecureImageServer {
                 .resize(200, 200, { fit: 'cover' })
                 .rotate(rotate) // Slight random rotation
                 .modulate({ brightness }) // Slight brightness change
-                .jpeg({ quality: 70 + Math.floor(Math.random() * 15) }) // Random quality
+                .jpeg({ quality: 80, chromaSubsampling: '4:4:4' }) // Fixed quality for consistency
                 .toBuffer();
 
             return processed;
@@ -217,20 +235,26 @@ export class SecureImageServer {
 
     /**
      * Verify answers using secure IDs
+     * FIXED: Uses stored targetCategory from Redis instead of recalculating
      */
-    verifyAnswers(sessionId: string, selectedIds: string[]): {
+    async verifyAnswers(sessionId: string, selectedIds: string[]): Promise<{
         correct: boolean;
         message: string;
-    } {
-        const session = sessionImages.get(sessionId);
-        if (!session) {
+    }> {
+        const sessionData = await RedisStore.getSessionImages(sessionId);
+        if (!sessionData) {
             return { correct: false, message: 'Session expired or invalid' };
         }
 
-        // Get correct answers for this session
-        const correctIds = new Set<string>();
-        const targetCategory = this.getSessionTargetCategory(sessionId);
+        const { images: session, targetCategory } = sessionData;
 
+        // FIXED: Use stored targetCategory instead of recalculating
+        if (!targetCategory) {
+            return { correct: false, message: 'Invalid session data' };
+        }
+
+        // Get correct answers for this session using stored targetCategory
+        const correctIds = new Set<string>();
         session.forEach((img, id) => {
             if (img.category === targetCategory) {
                 correctIds.add(id);
@@ -243,7 +267,7 @@ export class SecureImageServer {
         const extra = [...selected].filter(id => !correctIds.has(id));
 
         if (missed.length === 0 && extra.length === 0) {
-            this.cleanupSession(sessionId);
+            await this.cleanupSession(sessionId, session);
             return { correct: true, message: 'Correct!' };
         }
 
@@ -254,42 +278,25 @@ export class SecureImageServer {
     }
 
     /**
-     * Get target category for a session
+     * Cleanup session data from Redis
      */
-    private getSessionTargetCategory(sessionId: string): string | null {
-        const session = sessionImages.get(sessionId);
-        if (!session) return null;
-
-        // The target category is the minority category in correct answers
-        const categoryCounts = new Map<string, number>();
-        session.forEach(img => {
-            categoryCounts.set(img.category, (categoryCounts.get(img.category) || 0) + 1);
-        });
-
-        // Find the category with fewer images (that's the target)
-        let minCategory = '';
-        let minCount = Infinity;
-        categoryCounts.forEach((count, cat) => {
-            if (count < minCount && count >= 2) {
-                minCount = count;
-                minCategory = cat;
+    private async cleanupSession(sessionId: string, session?: Map<string, SecureImage>): Promise<void> {
+        // Get session if not provided
+        if (!session) {
+            const sessionData = await RedisStore.getSessionImages(sessionId);
+            if (sessionData) {
+                session = sessionData.images;
             }
-        });
-
-        return minCategory;
-    }
-
-    /**
-     * Cleanup session data
-     */
-    private cleanupSession(sessionId: string): void {
-        const session = sessionImages.get(sessionId);
-        if (session) {
-            session.forEach((_, id) => {
-                imageIdToFile.delete(id);
-            });
-            sessionImages.delete(sessionId);
         }
+
+        // Delete image mappings
+        if (session) {
+            const imageIds = Array.from(session.keys());
+            await RedisStore.deleteImageMappingsBatch(imageIds);
+        }
+
+        // Delete session
+        await RedisStore.deleteSessionImages(sessionId);
     }
 
     /**

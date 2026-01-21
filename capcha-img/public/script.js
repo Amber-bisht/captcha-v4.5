@@ -1,6 +1,7 @@
 "use strict";
 /**
- * Client-side script for image CAPTCHA
+ * Secure Client-side script for image CAPTCHA
+ * Works with randomized image IDs (not filenames)
  */
 const API_URL = '/api';
 const captchaTriggerBtn = document.getElementById('captcha-trigger-btn');
@@ -14,7 +15,8 @@ const submitBtn = document.getElementById('submit-btn');
 let currentSessionId = null;
 let currentToken = null;
 let currentCsrfToken = null;
-let selectedImages = new Set();
+// SECURITY: Store image IDs, not filenames
+let selectedImageIds = new Set();
 // Open Modal
 if (captchaTriggerBtn) {
     captchaTriggerBtn.addEventListener('click', () => {
@@ -43,7 +45,7 @@ async function loadCaptcha() {
     if (!grid)
         return;
     grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center;">Loading...</div>';
-    selectedImages.clear();
+    selectedImageIds.clear();
     try {
         const response = await fetch(`${API_URL}/captcha`);
         if (!response.ok) {
@@ -57,7 +59,8 @@ async function loadCaptcha() {
         if (instructionText) {
             instructionText.textContent = data.question;
         }
-        renderGrid(data.images);
+        // SECURITY: Images now come with {id, url} instead of just filename
+        renderSecureGrid(data.images);
     }
     catch (error) {
         if (grid) {
@@ -65,24 +68,30 @@ async function loadCaptcha() {
         }
     }
 }
-function renderGrid(images) {
+// SECURITY: Render grid using secure image URLs
+function renderSecureGrid(images) {
     if (!grid)
         return;
     grid.innerHTML = '';
-    images.forEach((imgName) => {
+    images.forEach((img) => {
         const div = document.createElement('div');
         div.className = 'captcha-item';
-        const img = document.createElement('img');
-        img.src = `/images/${imgName}`;
-        img.alt = 'captcha option';
-        div.appendChild(img);
+        const imgEl = document.createElement('img');
+        // SECURITY: Use secure URL instead of direct filename
+        imgEl.src = img.url;
+        imgEl.alt = 'captcha option';
+        // Prevent right-click/save
+        imgEl.oncontextmenu = () => false;
+        imgEl.draggable = false;
+        div.appendChild(imgEl);
         div.addEventListener('click', () => {
-            if (selectedImages.has(imgName)) {
-                selectedImages.delete(imgName);
+            // SECURITY: Store image ID, not filename
+            if (selectedImageIds.has(img.id)) {
+                selectedImageIds.delete(img.id);
                 div.classList.remove('selected');
             }
             else {
-                selectedImages.add(imgName);
+                selectedImageIds.add(img.id);
                 div.classList.add('selected');
             }
         });
@@ -98,7 +107,7 @@ if (verifyBtn) {
         }
         try {
             // Get behavior data (if behaviorTracker is loaded)
-            const behaviorData = window.getBehaviorData ? window.getBehaviorData() : null;
+            const behaviorData = window.behaviorTracker?.getData() || null;
             const response = await fetch(`${API_URL}/verify`, {
                 method: 'POST',
                 headers: {
@@ -107,7 +116,8 @@ if (verifyBtn) {
                 },
                 body: JSON.stringify({
                     sessionId: currentSessionId,
-                    selectedImages: Array.from(selectedImages),
+                    // SECURITY: Send image IDs, not filenames
+                    selectedImages: Array.from(selectedImageIds),
                     token: currentToken,
                     behaviorData,
                 }),
