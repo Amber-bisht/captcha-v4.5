@@ -32,7 +32,10 @@ const ALLOWED_ORIGINS = [
 ];
 
 // Security headers
-app.use(helmet());
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+}));
 
 // CORS - Strict origin whitelist
 app.use(cors({

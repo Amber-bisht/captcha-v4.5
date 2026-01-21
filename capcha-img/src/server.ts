@@ -38,7 +38,8 @@ const usedSuccessTokens = new Set<string>();
 
 // Security headers
 app.use(helmet({
-  crossOriginEmbedderPolicy: false, // Allow images
+  crossOriginEmbedderPolicy: false, // Allow images to be loaded
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow cross-origin requests for images
 }));
 
 // CORS - Strict origin whitelist
