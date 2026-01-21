@@ -15,7 +15,8 @@ import {
 } from './middleware/rateLimiter';
 import { TokenService } from './utils/tokenService';
 import { BehaviorAnalyzer } from './utils/behaviorAnalyzer';
-import { SecureImageServer, SecureChallenge, createSecureImageMiddleware } from './utils/secureImageServer';
+import { SecureImageServer, createSecureImageMiddleware } from './utils/secureImageServer';
+import { DynamicCaptchaGenerator } from './utils/dynamicCaptcha';
 import RedisStore from './utils/redisStore';
 
 const app = express();
@@ -25,35 +26,27 @@ const PORT = process.env.PORT || 3001;
 const ALLOWED_ORIGINS = [
   'https://links.asprin.dev',
   'https://www.links.asprin.dev',
-  // Development
   'http://localhost:3000',
   'http://localhost:3001',
 ];
 
-// CAPTCHA Site Key (public) and Secret Key (private)
+// CAPTCHA Keys
 const CAPTCHA_SITE_KEY = process.env.CAPTCHA_SITE_KEY || 'sk_captcha_asprin_default_site_key';
 const CAPTCHA_SECRET_KEY = process.env.CAPTCHA_SECRET_KEY || 'sk_captcha_asprin_default_secret_key';
 const JWT_SECRET = process.env.JWT_SECRET || 'default-jwt-secret';
 
 // Security headers
 app.use(helmet({
-  crossOriginEmbedderPolicy: false, // Allow images to be loaded
-  crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow cross-origin requests for images
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
 
-// CORS - Strict origin whitelist
+// CORS
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like direct image loads, curl, server-to-server)
-    if (!origin) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
-
-    if (ALLOWED_ORIGINS.includes(origin)) {
-      return callback(null, true);
-    }
-
-    console.warn(`CORS blocked origin: ${origin}`);
     return callback(new Error('Not allowed by CORS'), false);
   },
   credentials: true,
@@ -64,336 +57,171 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
-// Serve static files EXCEPT images (images served securely)
-app.use(express.static(path.join(__dirname, '../public'), {
-  index: 'index.html',
-  // Don't serve images directory directly
-  setHeaders: (res, filePath) => {
-    if (filePath.includes('/images/')) {
-      res.status(403);
-    }
-  }
-}));
+// Static files
+app.use(express.static(path.join(__dirname, '../public')));
 
-// Block direct access to images directory
-app.use('/images', (req, res) => {
-  res.status(403).json({ error: 'Direct image access forbidden' });
-});
-
-// Session configuration
+// Session & Fingerprint
 app.use(createSessionMiddleware());
-
-// Fingerprint middleware (must be before routes)
 app.use(fingerprintMiddleware);
 
-// Initialize secure image server
+// Initialize generators
 const secureImageServer = new SecureImageServer(path.join(__dirname, '../public/images'));
+const dynamicCaptchaGenerator = new DynamicCaptchaGenerator();
 
 // =====================================================
-// SECURE IMAGE ENDPOINT - Serves images with random IDs
+// DYNAMIC TEXT CAPTCHA (20-FACTOR SYSTEM)
 // =====================================================
-app.get('/api/image/:imageId', createSecureImageMiddleware(secureImageServer));
+app.get('/api/dynamic-captcha', challengeRateLimiter, async (req: Request, res: Response) => {
+  try {
+    const result = await dynamicCaptchaGenerator.generate();
+    const serverFingerprint = generateServerFingerprint(req);
+    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
+
+    const tokenResponse = TokenService.generateToken(result.id, serverFingerprint, ip);
+
+    await RedisStore.setChallenge(result.id, {
+      textAnswer: result.answer,
+      type: 'text',
+      fingerprint: serverFingerprint,
+      ip,
+      expiresAt: result.expiresAt
+    });
+
+    res.setHeader('X-Token', tokenResponse.token);
+    res.setHeader('X-Challenge-Id', result.id);
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.send(result.image);
+  } catch (error) {
+    console.error('Dynamic captcha error:', error);
+    res.status(500).json({ error: 'Failed to generate captcha' });
+  }
+});
 
 // =====================================================
-// CAPTCHA CHALLENGE ENDPOINT
+// IMAGE CAPTCHA ENDPOINT
 // =====================================================
 app.get('/api/captcha', challengeRateLimiter, async (req: Request, res: Response) => {
   try {
-    // Check for headless browser
-    const userAgent = req.headers['user-agent'] || '';
-    const isHeadless = BehaviorAnalyzer.detectHeadlessBrowser(
-      userAgent,
-      req.headers as Record<string, string>
-    );
+    const challenge = await secureImageServer.generateSecureChallenge({ gridSize: 9, difficulty: 'standard' });
+    if (!challenge) return res.status(500).json({ error: 'Failed to generate challenge' });
 
-    if (isHeadless) {
-      return res.status(403).json({
-        success: false,
-        error: 'Automated requests are not allowed',
-      });
-    }
-
-    // Generate SECURE challenge (with randomized image IDs)
-    const challenge = await secureImageServer.generateSecureChallenge(9);
-
-    if (!challenge) {
-      return res.status(500).json({
-        error: 'No valid categorized images found.',
-      });
-    }
-
-    // Generate SERVER-SIDE fingerprint (not client-provided)
     const serverFingerprint = generateServerFingerprint(req);
-    const ip = req.fingerprint?.components.ip || 'unknown';
+    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
 
-    // Generate token with server-generated fingerprint
-    const tokenResponse = TokenService.generateToken(
-      challenge.sessionId,
-      serverFingerprint,
-      ip
-    );
+    const tokenResponse = TokenService.generateToken(challenge.sessionId, serverFingerprint, ip);
 
-    // Store challenge data in Redis
     await RedisStore.setChallenge(challenge.sessionId, {
       challenge,
+      type: 'image',
       fingerprint: serverFingerprint,
       ip,
+      expiresAt: challenge.expiresAt
     });
 
-    // Store server fingerprint for verification
-    await RedisStore.setServerFingerprint(challenge.sessionId, serverFingerprint);
-
-    // Return challenge with SECURE image URLs (random IDs, not real filenames)
     res.json({
       success: true,
       sessionId: challenge.sessionId,
       question: challenge.question,
-      // SECURITY: Return URLs with random IDs, not actual filenames
-      images: challenge.imageIds.map(id => ({
-        id,
-        url: `/api/image/${id}`,
-      })),
+      images: challenge.imageIds.map(id => ({ id, url: `/api/image/${id}` })),
       token: tokenResponse.token,
-      expiresIn: tokenResponse.expiresIn,
     });
   } catch (error) {
-    console.error('Error generating challenge:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-    });
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+app.get('/api/image/:imageId', createSecureImageMiddleware(secureImageServer));
+
+// =====================================================
+// VERIFICATION ENDPOINT (HANDLES BOTH TYPES)
+// =====================================================
+app.post('/api/verify', verificationRateLimiter, async (req: Request, res: Response) => {
+  try {
+    const { sessionId, selectedImages, textAnswer, token, behaviorData } = req.body;
+    const challengeId = sessionId || req.headers['x-challenge-id'] as string;
+
+    if (!challengeId || !token) {
+      return res.status(400).json({ success: false, message: 'Missing fields' });
+    }
+
+    const stored = await RedisStore.getChallenge(challengeId);
+    if (!stored || Date.now() > stored.expiresAt) {
+      return res.status(400).json({ success: false, message: 'Expired or invalid' });
+    }
+
+    const serverFingerprint = generateServerFingerprint(req);
+    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
+
+    const tokenVerification = await TokenService.verifyToken(token, serverFingerprint, ip);
+    if (!tokenVerification.valid) {
+      return res.status(400).json({ success: false, message: tokenVerification.error });
+    }
+
+    let isCorrect = false;
+    if (stored.type === 'text') {
+      isCorrect = textAnswer?.toLowerCase() === stored.textAnswer?.toLowerCase();
+    } else {
+      const result = await secureImageServer.verifyAnswers(challengeId, selectedImages);
+      isCorrect = result.correct;
+    }
+
+    if (isCorrect) {
+      await RedisStore.deleteChallenge(challengeId);
+      const successToken = TokenService.generateSuccessToken(serverFingerprint, ip);
+      return res.json({ success: true, token: successToken.token });
+    }
+
+    res.json({ success: false, message: 'Incorrect answer' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Internal error' });
   }
 });
 
 // =====================================================
-// VERIFICATION ENDPOINT
-// =====================================================
-app.post(
-  '/api/verify',
-  verificationRateLimiter,
-  async (req: Request, res: Response) => {
-    try {
-      const { sessionId, selectedImages, token, behaviorData } = req.body;
-
-      // Validate input
-      if (!sessionId || !selectedImages || !token) {
-        return res.status(400).json({
-          success: false,
-          message: 'Missing required fields',
-        });
-      }
-
-      // Get challenge from Redis
-      const stored = await RedisStore.getChallenge(sessionId);
-      if (!stored) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid or expired session',
-        });
-      }
-
-      // Check if challenge is expired
-      if (Date.now() > stored.challenge.expiresAt) {
-        await RedisStore.deleteChallenge(sessionId);
-        return res.status(400).json({
-          success: false,
-          message: 'Challenge expired',
-        });
-      }
-
-      // Get SERVER-SIDE fingerprint (not client-provided)
-      const serverFingerprint = await RedisStore.getServerFingerprint(sessionId);
-      const ip = req.fingerprint?.components.ip || 'unknown';
-
-      // Use stored server fingerprint for verification
-      const expectedFingerprint = serverFingerprint || stored.fingerprint;
-
-      // Verify token with server-generated fingerprint
-      const tokenVerification = await TokenService.verifyToken(
-        token,
-        expectedFingerprint,
-        ip
-      );
-
-      if (!tokenVerification.valid) {
-        return res.status(400).json({
-          success: false,
-          message: tokenVerification.error || 'Token verification failed',
-        });
-      }
-
-      // Verify IP matches
-      if (stored.ip !== ip) {
-        return res.status(400).json({
-          success: false,
-          message: 'Request origin mismatch',
-        });
-      }
-
-      // Analyze behavior if provided
-      if (behaviorData) {
-        const behaviorScore = BehaviorAnalyzer.analyzeBehavior(behaviorData);
-        if (behaviorScore.riskLevel === 'high') {
-          await RedisStore.deleteChallenge(sessionId);
-          return res.json({
-            success: false,
-            message: 'Suspicious behavior detected',
-          });
-        }
-      }
-
-      // Verify answer using SECURE image IDs
-      const result = await secureImageServer.verifyAnswers(sessionId, selectedImages);
-
-      if (result.correct) {
-        // Correct - clear session to prevent replay
-        await RedisStore.deleteChallenge(sessionId);
-
-        // Generate success token
-        const successToken = TokenService.generateSuccessToken(
-          expectedFingerprint,
-          ip
-        );
-
-        res.json({
-          success: true,
-          message: 'Captcha verified successfully!',
-          token: successToken.token,
-        });
-      } else {
-        res.json({
-          success: false,
-          message: result.message,
-        });
-      }
-    } catch (error) {
-      console.error('Error verifying captcha:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error',
-      });
-    }
-  }
-);
-
-// =====================================================
-// SERVER-SIDE TOKEN VERIFICATION (Like Cloudflare siteverify)
-// Backend calls this with secret key to verify user's token
+// SERVER-SIDE VERIFY (FOR CLIENTS)
 // =====================================================
 app.post('/api/siteverify', async (req: Request, res: Response) => {
   try {
     const { secret, response: userToken, remoteip } = req.body;
+    if (secret !== CAPTCHA_SECRET_KEY) return res.status(401).json({ success: false, 'error-codes': ['invalid-secret'] });
 
-    // Validate secret key
-    if (!secret || secret !== CAPTCHA_SECRET_KEY) {
-      return res.status(401).json({
-        success: false,
-        'error-codes': ['invalid-secret'],
-        message: 'Invalid secret key',
-      });
-    }
+    const decoded = jwt.verify(userToken, JWT_SECRET) as any;
 
-    // Validate token exists
-    if (!userToken) {
+    // SECURITY FIX: Only allow tokens with status 'verified' to pass siteverify
+    // This prevents attackers from using challenge-issued tokens to skip verification
+    if (decoded.status !== 'verified') {
       return res.status(400).json({
         success: false,
-        'error-codes': ['missing-input-response'],
-        message: 'Missing captcha response token',
+        'error-codes': ['token-not-verified'],
+        message: 'This token has not been solved yet.'
       });
     }
 
-    // Check if token has already been used (prevent replay) - NOW USES REDIS
-    const tokenUsed = await RedisStore.isTokenUsed(userToken);
-    if (tokenUsed) {
+    // IP BINDING CHECK: Ensure token is used by the same IP that solved it
+    if (remoteip && decoded.ip && decoded.ip !== remoteip) {
       return res.status(400).json({
         success: false,
-        'error-codes': ['token-already-used'],
-        message: 'This token has already been used',
+        'error-codes': ['ip-mismatch'],
+        message: 'Request origin mismatch.'
       });
     }
 
-    // Verify the JWT token
-    try {
-      const decoded = jwt.verify(userToken, JWT_SECRET) as any;
+    if (await RedisStore.isTokenUsed(userToken)) return res.status(400).json({ success: false, 'error-codes': ['token-already-used'] });
 
-      // Mark token as used in Redis (with automatic TTL expiration)
-      await RedisStore.markTokenUsed(userToken);
-
-      // Optionally verify IP if provided
-      if (remoteip && decoded.ip && decoded.ip !== remoteip && decoded.ip !== 'unknown') {
-        console.warn(`IP mismatch: token=${decoded.ip}, request=${remoteip}`);
-        // We log but don't fail - IPs can change due to proxies
-      }
-
-      return res.json({
-        success: true,
-        challenge_ts: new Date(decoded.timestamp).toISOString(),
-        hostname: 'captcha-p.asprin.dev',
-        'error-codes': [],
-      });
-    } catch (jwtError: any) {
-      if (jwtError.name === 'TokenExpiredError') {
-        return res.status(400).json({
-          success: false,
-          'error-codes': ['token-expired'],
-          message: 'Token has expired',
-        });
-      }
-
-      return res.status(400).json({
-        success: false,
-        'error-codes': ['invalid-input-response'],
-        message: 'Invalid or malformed token',
-      });
-    }
-  } catch (error) {
-    console.error('Siteverify error:', error);
-    return res.status(500).json({
-      success: false,
-      'error-codes': ['internal-error'],
-      message: 'Internal server error',
-    });
+    await RedisStore.markTokenUsed(userToken);
+    return res.json({ success: true, challenge_ts: new Date(decoded.timestamp).toISOString() });
+  } catch {
+    return res.status(400).json({ success: false, 'error-codes': ['invalid-token'] });
   }
 });
 
-// =====================================================
-// GET SITE KEY (Public endpoint for frontend)
-// =====================================================
-app.get('/api/sitekey', (req: Request, res: Response) => {
-  res.json({
-    success: true,
-    siteKey: CAPTCHA_SITE_KEY,
-  });
-});
+app.get('/api/sitekey', (req, res) => res.json({ success: true, siteKey: CAPTCHA_SITE_KEY }));
 
-// Health check endpoint
-app.get('/health', async (req: Request, res: Response) => {
-  const redisStatus = redisClient.status === 'ready' ? 'connected' : 'disconnected';
+app.get('/health', (req, res) => res.json({ status: 'healthy', redis: redisClient.status }));
 
-  res.status(200).json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    service: 'captcha-image-secure',
-    redis: redisStatus,
-  });
-});
-
-// =====================================================
-// START SERVER
-// =====================================================
 async function startServer() {
-  // Initialize Redis connection
-  const redisConnected = await initRedis();
-  if (!redisConnected) {
-    console.warn('⚠️  Redis not connected - falling back to degraded mode');
-    // Continue without Redis for development, but log warning
-  }
-
-  app.listen(PORT, () => {
-    console.log(`Secure Image CAPTCHA Server running at http://localhost:${PORT}`);
-    console.log(`Redis status: ${redisClient.status}`);
-  });
+  await initRedis();
+  app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
 }
 
 startServer();

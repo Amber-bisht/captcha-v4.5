@@ -8,9 +8,12 @@ import { SecureImage, SecureChallenge } from './secureImageServer';
 
 // Interface for stored challenge data
 interface StoredChallenge {
-    challenge: SecureChallenge;
+    challenge?: any;        // For image challenges
+    textAnswer?: string;    // For dynamic text challenges
+    type: 'image' | 'text'; // Type of challenge
     fingerprint: string;
     ip: string;
+    expiresAt: number;
 }
 
 // Interface for image mapping

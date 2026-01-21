@@ -4,6 +4,7 @@ export interface TokenPayload {
   timestamp: number;
   fingerprint: string;
   ip: string;
+  status: 'pending' | 'verified';
 }
 
 export interface TokenResponse {

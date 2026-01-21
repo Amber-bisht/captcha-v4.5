@@ -15,7 +15,8 @@ export class TokenService {
   static generateToken(
     challengeId: string,
     fingerprint: string,
-    ip: string
+    ip: string,
+    status: 'pending' | 'verified' = 'pending'
   ): TokenResponse {
     const nonce = crypto.randomBytes(16).toString('hex');
     const timestamp = Date.now();
@@ -26,6 +27,7 @@ export class TokenService {
       timestamp,
       fingerprint,
       ip,
+      status
     };
 
     const token = jwt.sign(payload, this.secret, {
@@ -107,6 +109,6 @@ export class TokenService {
    */
   static generateSuccessToken(fingerprint: string, ip: string): TokenResponse {
     const challengeId = 'success';
-    return this.generateToken(challengeId, fingerprint, ip);
+    return this.generateToken(challengeId, fingerprint, ip, 'verified');
   }
 }
