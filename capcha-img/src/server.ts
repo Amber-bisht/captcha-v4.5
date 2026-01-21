@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
 import helmet from 'helmet';
@@ -49,6 +49,28 @@ app.use(cookieParser());
 app.use(createSessionMiddleware());
 app.use(fingerprintMiddleware);
 
+// =====================================================
+// BOT KILLER MIDDLEWARE: Header Integrity & Jitter
+// =====================================================
+const botKiller = async (req: Request, res: Response, next: NextFunction) => {
+  const ua = req.headers['user-agent'] || '';
+  const risk = await RiskAnalyzer.calculateRiskScore(req);
+
+  // 1. Instant block for obvious bot headers
+  if (req.headers['navigator-webdriver'] || req.headers['x-automation-id'] || ua.includes('HeadlessChrome')) {
+    console.warn(`[BLOCKED] Bot headers detected from IP: ${req.ip}`);
+    return res.status(403).json({ error: 'Security violation' });
+  }
+
+  // 2. Temporal Jitter: Waste attacker time for suspicious requests
+  if (risk.score > 40) {
+    const delay = Math.floor(Math.random() * 2000) + 500; // 0.5s to 2.5s delay
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  next();
+};
+
 const secureImageServer = new SecureImageServer(path.join(__dirname, '../public/images'));
 const dynamicCaptchaGenerator = new DynamicCaptchaGenerator();
 const spatialGenerator = new SpatialCaptchaGenerator();
@@ -56,10 +78,17 @@ const spatialGenerator = new SpatialCaptchaGenerator();
 // =====================================================
 // 1. INITIALIZE CHALLENGE (Get PoW requirements)
 // =====================================================
-app.get('/api/init', async (req: Request, res: Response) => {
+app.get('/api/init', botKiller, async (req: Request, res: Response) => {
   try {
     const risk = await RiskAnalyzer.calculateRiskScore(req);
+
+    // ECONOMIC TAX: Datacenters/VPNs get much harder PoW
+    let difficultyAdjustment = 0;
+    if (risk.level === 'high') difficultyAdjustment = 1;
+    if (risk.level === 'critical') difficultyAdjustment = 2;
+
     const challengeBoundary = PoWManager.generateChallenge(risk.score);
+    challengeBoundary.difficulty += difficultyAdjustment;
 
     await RedisStore.setPoWChallenge(challengeBoundary.nonce, challengeBoundary.difficulty);
 
@@ -77,11 +106,10 @@ app.get('/api/init', async (req: Request, res: Response) => {
 // =====================================================
 // 2. REQUEST CHALLENGE (Hybrid Flow)
 // =====================================================
-app.post('/api/request-challenge', challengeRateLimiter, async (req: Request, res: Response) => {
+app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: Request, res: Response) => {
   try {
     const { nonce, solution, type } = req.body;
 
-    // 🛡️ SECURITY LAYER: Verify PoW
     const difficulty = await RedisStore.consumePoWChallenge(nonce);
     if (difficulty === null) return res.status(403).json({ error: 'Invalid or expired nonce' });
 
@@ -91,16 +119,15 @@ app.post('/api/request-challenge', challengeRateLimiter, async (req: Request, re
     const serverFingerprint = generateServerFingerprint(req);
     const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
 
-    // RISK ESCALATION: If user requests 'text' but risk is 'high', force 'spatial'
     const risk = await RiskAnalyzer.calculateRiskScore(req);
-    const targetType = risk.score > 60 ? 'spatial' : (type || 'text');
+    // FORCE SPATIAL for anything medium-high risk
+    const targetType = risk.score > 50 ? 'spatial' : (type || 'text');
 
     let challengeData: any = {};
 
     if (targetType === 'spatial') {
       const challenge = await spatialGenerator.generate();
       const tokenResponse = TokenService.generateToken(challenge.id, serverFingerprint, ip);
-
       await RedisStore.setChallenge(challenge.id, {
         targetFrame: challenge.targetFrame,
         type: 'spatial',
@@ -108,7 +135,6 @@ app.post('/api/request-challenge', challengeRateLimiter, async (req: Request, re
         ip,
         expiresAt: challenge.expiresAt
       });
-
       challengeData = {
         id: challenge.id,
         type: 'spatial',
@@ -120,7 +146,6 @@ app.post('/api/request-challenge', challengeRateLimiter, async (req: Request, re
     } else {
       const result = await dynamicCaptchaGenerator.generate();
       const tokenResponse = TokenService.generateToken(result.id, serverFingerprint, ip);
-
       await RedisStore.setChallenge(result.id, {
         textAnswer: result.answer,
         type: 'text',
@@ -128,7 +153,6 @@ app.post('/api/request-challenge', challengeRateLimiter, async (req: Request, re
         ip,
         expiresAt: result.expiresAt
       });
-
       challengeData = {
         id: result.id,
         type: 'text',
@@ -136,22 +160,23 @@ app.post('/api/request-challenge', challengeRateLimiter, async (req: Request, re
         token: tokenResponse.token
       };
     }
-
     res.json(challengeData);
   } catch (error) {
-    console.error('Challenge request error:', error);
-    res.status(500).json({ error: 'Failed to request captcha' });
+    res.status(500).json({ error: 'Failed' });
   }
 });
 
 // =====================================================
 // 3. VERIFICATION
 // =====================================================
-app.post('/api/verify', verificationRateLimiter, async (req: Request, res: Response) => {
+app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request, res: Response) => {
   try {
-    const { sessionId, textAnswer, targetFrame, token, behaviorData, honeyPot } = req.body;
+    const { sessionId, textAnswer, targetFrame, token, honeyPot } = req.body;
 
-    if (honeyPot) return res.status(403).json({ success: false, message: 'Security violation' });
+    if (honeyPot) {
+      // PERMANENT RATE LIMIT / REDIS BAN could go here
+      return res.status(403).json({ success: false, message: 'Violation tracked' });
+    }
 
     const challengeId = sessionId;
     if (!challengeId || !token) return res.status(400).json({ success: false, message: 'Missing fields' });
@@ -166,17 +191,15 @@ app.post('/api/verify', verificationRateLimiter, async (req: Request, res: Respo
     if (!tokenVerification.valid) return res.status(400).json({ success: false, message: tokenVerification.error });
 
     let isCorrect = false;
+    const solveTime = Date.now() - (stored.expiresAt - 300000);
 
     if (stored.type === 'spatial') {
-      // Spatial Check: User must have landed on the 'targetFrame' index
       isCorrect = parseInt(targetFrame, 10) === stored.targetFrame;
-
-      // BIOMETRIC CHECK: Ensure they didn't solve it too fast/linearly
-      const solveTime = Date.now() - (stored.expiresAt - 300000);
-      if (solveTime < 2000) isCorrect = false; // Too fast for 3D rotation
+      // 3D rotation requires at least 2.5s for a real human
+      if (solveTime < 2500) isCorrect = false;
     } else {
       isCorrect = textAnswer?.toLowerCase() === stored.textAnswer?.toLowerCase();
-      const solveTime = Date.now() - (stored.expiresAt - 300000);
+      // Text entry requires at least 1.5s
       if (solveTime < 1500) isCorrect = false;
     }
 
@@ -186,7 +209,7 @@ app.post('/api/verify', verificationRateLimiter, async (req: Request, res: Respo
       return res.json({ success: true, token: successToken.token });
     }
 
-    res.json({ success: false, message: 'Incorrect answer' });
+    res.json({ success: false, message: 'Incorrect' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Internal error' });
   }
@@ -210,6 +233,6 @@ app.get('/health', (req, res) => res.json({ status: 'healthy', redis: redisClien
 
 async function startServer() {
   await initRedis();
-  app.listen(PORT, () => console.log(`Hybrid Anti-Bot Server running on ${PORT}`));
+  app.listen(PORT, () => console.log(`Hydra Anti-Bot Server running on ${PORT}`));
 }
 startServer();
