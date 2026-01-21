@@ -201,138 +201,142 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           EOF
 
+      - name: Create docker-compose.prod.yml locally
+        run: |
+          cat > docker-compose.prod.yml << EOF
+          version: '3.8'
+          services:
+            captcha-server:
+              image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_SERVER_LC }}:latest
+              container_name: captcha-server
+              restart: unless-stopped
+              ports:
+                - "3000:3000"
+              env_file:
+                - .env
+              environment:
+                - PORT=3000
+                - REDIS_URL=redis://redis:6379
+              depends_on:
+                - redis
+              networks:
+                - captcha-network
+              healthcheck:
+                test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+                interval: 30s
+                timeout: 10s
+                retries: 3
+                start_period: 10s
+              logging:
+                driver: "json-file"
+                options:
+                  max-size: "10m"
+                  max-file: "3"
+
+            captcha-image:
+              image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_IMAGE_LC }}:latest
+              container_name: captcha-image
+              restart: unless-stopped
+              ports:
+                - "3001:3001"
+              env_file:
+                - .env
+              environment:
+                - PORT=3001
+                - REDIS_URL=redis://redis:6379
+              depends_on:
+                - redis
+              networks:
+                - captcha-network
+              healthcheck:
+                test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+                interval: 30s
+                timeout: 10s
+                retries: 3
+                start_period: 10s
+              logging:
+                driver: "json-file"
+                options:
+                  max-size: "10m"
+                  max-file: "3"
+
+            redis:
+              image: redis:7-alpine
+              container_name: captcha-redis
+              restart: unless-stopped
+              command: redis-server --appendonly yes --maxmemory 100mb --maxmemory-policy allkeys-lru
+              volumes:
+                - redis-data:/data
+              networks:
+                - captcha-network
+              healthcheck:
+                test: ["CMD", "redis-cli", "ping"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+
+            nginx:
+              image: nginx:alpine
+              container_name: captcha-nginx
+              restart: unless-stopped
+              ports:
+                - "80:80"
+                - "443:443"
+              volumes:
+                - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+                - ./nginx/ssl:/etc/nginx/ssl:ro
+              depends_on:
+                - captcha-server
+                - captcha-image
+              networks:
+                - captcha-network
+
+          networks:
+            captcha-network:
+              driver: bridge
+
+          volumes:
+            redis-data:
+              driver: local
+          EOF
+
+      - name: Copy docker-compose.prod.yml to VPS
+        run: |
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" scp -o StrictHostKeyChecking=no docker-compose.prod.yml ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/captcha-system/
+
       - name: Pull and deploy containers on VPS
         run: |
-          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             cd ~/captcha-system
             
             # Pull latest images
             docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_SERVER_LC }}:latest
             docker pull ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_IMAGE_LC }}:latest
             
-            # Create a production docker-compose.yml by removing build blocks and adding images
-            # This is more robust than simple sed replacements that break YAML structure
-            cat > docker-compose.prod.yml << 'DOCKERCOMPOSE'
-            version: '3.8'
-            services:
-              captcha-server:
-                image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_SERVER_LC }}:latest
-                container_name: captcha-server
-                restart: unless-stopped
-                ports:
-                  - "3000:3000"
-                env_file:
-                  - .env
-                environment:
-                  - PORT=3000
-                  - REDIS_URL=redis://redis:6379
-                depends_on:
-                  - redis
-                networks:
-                  - captcha-network
-                healthcheck:
-                  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
-                  interval: 30s
-                  timeout: 10s
-                  retries: 3
-                  start_period: 10s
-                logging:
-                  driver: "json-file"
-                  options:
-                    max-size: "10m"
-                    max-file: "3"
-
-              captcha-image:
-                image: ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME_IMAGE_LC }}:latest
-                container_name: captcha-image
-                restart: unless-stopped
-                ports:
-                  - "3001:3001"
-                env_file:
-                  - .env
-                environment:
-                  - PORT=3001
-                  - REDIS_URL=redis://redis:6379
-                depends_on:
-                  - redis
-                networks:
-                  - captcha-network
-                healthcheck:
-                  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
-                  interval: 30s
-                  timeout: 10s
-                  retries: 3
-                  start_period: 10s
-                logging:
-                  driver: "json-file"
-                  options:
-                    max-size: "10m"
-                    max-file: "3"
-
-              redis:
-                image: redis:7-alpine
-                container_name: captcha-redis
-                restart: unless-stopped
-                command: redis-server --appendonly yes --maxmemory 100mb --maxmemory-policy allkeys-lru
-                volumes:
-                  - redis-data:/data
-                networks:
-                  - captcha-network
-                healthcheck:
-                  test: ["CMD", "redis-cli", "ping"]
-                  interval: 10s
-                  timeout: 5s
-                  retries: 5
-
-              nginx:
-                image: nginx:alpine
-                container_name: captcha-nginx
-                restart: unless-stopped
-                ports:
-                  - "80:80"
-                  - "443:443"
-                volumes:
-                  - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-                  - ./nginx/ssl:/etc/nginx/ssl:ro
-                depends_on:
-                  - captcha-server
-                  - captcha-image
-                networks:
-                  - captcha-network
-
-            networks:
-              captcha-network:
-                driver: bridge
-
-            volumes:
-              redis-data:
-                driver: local
-            DOCKERCOMPOSE
-
             # Stop existing containers
-            docker-compose -f docker-compose.prod.yml down --remove-orphans || true
+            docker compose -f docker-compose.prod.yml down --remove-orphans || true
             
             # Start new containers
-            docker-compose -f docker-compose.prod.yml up -d --force-recreate
+            docker compose -f docker-compose.prod.yml up -d --force-recreate
             
             # Cleanup old images
             docker image prune -f
             
             # Show status
-            docker-compose -f docker-compose.prod.yml ps
-          EOF
+            docker compose -f docker-compose.prod.yml ps
+          ENDSSH
 
       - name: Health check
         run: |
           sleep 30
-          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << EOF
+          sshpass -p "${{ secrets.VPS_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'ENDSSH'
             echo "=== Container Status ==="
-            docker-compose -f ~/captcha-system/docker-compose.prod.yml ps
+            docker compose -f ~/captcha-system/docker-compose.prod.yml ps
             
             echo "=== Health Checks ==="
             curl -f http://localhost:3000/health || echo "captcha-server unhealthy"
             curl -f http://localhost:3001/health || echo "captcha-image unhealthy"
-          EOF
+          ENDSSH
 
       - name: Notify on success
         if: success()
