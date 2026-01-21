@@ -173,8 +173,25 @@ jobs:
             # Check if docker compose plugin is installed
             if ! docker compose version &> /dev/null; then
               echo "Installing Docker Compose plugin..."
+              
+              # Add Docker's official GPG key and repository
+              sudo apt-get update
+              sudo apt-get install -y ca-certificates curl gnupg
+              sudo install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null || true
+              sudo chmod a+r /etc/apt/keyrings/docker.gpg
+              
+              # Add the Docker repository
+              echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+                $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+                sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              
+              # Install docker-compose-plugin
               sudo apt-get update
               sudo apt-get install -y docker-compose-plugin
+              
+              echo "Docker Compose plugin installed: $(docker compose version)"
             else
               echo "Docker Compose plugin already installed: $(docker compose version)"
             fi
