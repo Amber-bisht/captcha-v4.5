@@ -29,19 +29,19 @@ export function createRateLimiter(config: RateLimitConfig) {
 }
 
 /**
- * Challenge rate limiter: 5 requests per hour
+ * Challenge rate limiter: 60 requests per hour (1 per minute)
  */
 export const challengeRateLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000, // 1 hour
-  maxRequests: 5,
+  maxRequests: 20,
   message: 'Too many challenge requests. Please try again later.',
 });
 
 /**
- * Verification rate limiter: 20 requests per hour
+ * Verification rate limiter: 120 requests per hour (2 per minute)
  */
 export const verificationRateLimiter = createRateLimiter({
   windowMs: 60 * 60 * 1000, // 1 hour
-  maxRequests: 20,
+  maxRequests: 120,
   message: 'Too many verification attempts. Please try again later.',
 });
