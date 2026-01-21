@@ -44,12 +44,9 @@ app.use(helmet({
 // CORS - Strict origin whitelist
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, etc.) only in development
+    // Allow requests with no origin (like direct image loads, curl, server-to-server)
     if (!origin) {
-      if (process.env.NODE_ENV !== 'production') {
-        return callback(null, true);
-      }
-      return callback(new Error('No origin header'), false);
+      return callback(null, true);
     }
 
     if (ALLOWED_ORIGINS.includes(origin)) {

@@ -17,11 +17,42 @@ import { TokenService } from './utils/tokenService';
 import { CaptchaGenerator } from './utils/captchaGenerator';
 import { BehaviorAnalyzer } from './utils/behaviorAnalyzer';
 
+import cors from 'cors';
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Allowed origins for CORS
+const ALLOWED_ORIGINS = [
+  'https://links.asprin.dev',
+  'https://www.links.asprin.dev',
+  // Development
+  'http://localhost:3000',
+  'http://localhost:3001',
+];
+
 // Security headers
 app.use(helmet());
+
+// CORS - Strict origin whitelist
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like direct image loads, curl, server-to-server)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (ALLOWED_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
+
+    console.warn(`CORS blocked origin: ${origin}`);
+    return callback(new Error('Not allowed by CORS'), false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Captcha-Site-Key', 'Authorization'],
+}));
 
 // Middleware
 app.use(express.static(path.join(__dirname, '../public')));
