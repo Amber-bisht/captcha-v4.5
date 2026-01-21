@@ -87,8 +87,8 @@ app.use(createSessionMiddleware());
 // Fingerprint middleware (must be before routes)
 app.use(fingerprintMiddleware);
 
-// CSRF token middleware
-app.use(csrfTokenMiddleware);
+// CSRF protection is disabled for cross-domain CAPTCHA compatibility.
+// Security is maintained via JWT tokens, fingerprinting, and IP verification.
 
 // Initialize secure image server
 const secureImageServer = new SecureImageServer(path.join(__dirname, '../public/images'));
@@ -170,7 +170,6 @@ app.get('/api/captcha', challengeRateLimiter, (req: Request, res: Response) => {
         url: `/api/image/${id}`,
       })),
       token: tokenResponse.token,
-      csrfToken: req.csrfToken,
       expiresIn: tokenResponse.expiresIn,
     });
   } catch (error) {
@@ -188,7 +187,6 @@ app.get('/api/captcha', challengeRateLimiter, (req: Request, res: Response) => {
 app.post(
   '/api/verify',
   verificationRateLimiter,
-  csrfVerificationMiddleware,
   (req: Request, res: Response) => {
     try {
       const { sessionId, selectedImages, token, behaviorData } = req.body;

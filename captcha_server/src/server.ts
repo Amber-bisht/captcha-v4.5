@@ -69,8 +69,8 @@ app.use(createSessionMiddleware());
 // Fingerprint middleware (must be before routes)
 app.use(fingerprintMiddleware);
 
-// CSRF token middleware
-app.use(csrfTokenMiddleware);
+// CSRF protection is disabled for cross-domain compatibility.
+// Security is maintained via JWT tokens, fingerprinting, and IP verification.
 
 // In-memory store for challenges (use Redis in production)
 const challengeStore = new Map<
@@ -149,7 +149,6 @@ app.get('/captcha', challengeRateLimiter, (req: Request, res: Response) => {
 app.post(
   '/verify',
   verificationRateLimiter,
-  csrfVerificationMiddleware,
   (req: Request, res: Response) => {
     try {
       const { captcha, token, challengeId, behaviorData } = req.body;
