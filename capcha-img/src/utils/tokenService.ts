@@ -32,14 +32,6 @@ export class TokenService {
       expiresIn: `${TOKEN_EXPIRATION_MINUTES}m`,
     });
 
-    // Store nonce to prevent replay attacks
-    this.usedNonces.add(nonce);
-
-    // Clean up old nonces (older than expiration time)
-    setTimeout(() => {
-      this.usedNonces.delete(nonce);
-    }, TOKEN_EXPIRATION_MINUTES * 60 * 1000);
-
     return {
       token,
       expiresIn: TOKEN_EXPIRATION_MINUTES * 60,
@@ -81,8 +73,11 @@ export class TokenService {
         };
       }
 
-      // Mark nonce as used
+      // Mark nonce as used and schedule cleanup
       this.usedNonces.add(decoded.nonce);
+      setTimeout(() => {
+        this.usedNonces.delete(decoded.nonce);
+      }, TOKEN_EXPIRATION_MINUTES * 60 * 1000);
 
       return {
         valid: true,
