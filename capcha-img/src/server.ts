@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken';
 import { createSessionMiddleware } from './config/session';
 import redisClient, { initRedis } from './config/redis';
 import { connectMongo } from './config/mongo'; // NEW
-import { fingerprintMiddleware, generateServerFingerprint, analyzeFingerprint } from './middleware/fingerprint';
+import { fingerprintMiddleware, generateServerFingerprint, analyzeFingerprint, getClientIp } from './middleware/fingerprint';
 import {
   challengeRateLimiter,
   verificationRateLimiter,
@@ -263,7 +263,7 @@ app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: 
     console.log(`[POW] SUCCESS: Valid solution`);
 
     const serverFingerprint = generateServerFingerprint(req);
-    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
+    const ip = getClientIp(req);
 
     const risk = await RiskAnalyzer.calculateRiskScore(req);
     // FORCE SPATIAL for anything medium-high risk
@@ -330,7 +330,7 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
   try {
     const { sessionId, textAnswer, targetFrame, token, honeyPot } = req.body;
     const serverFingerprint = generateServerFingerprint(req);
-    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
+    const ip = getClientIp(req);
 
     // ===== DEVICE REPUTATION CHECK =====
     const deviceStatus = await deviceReputation.evaluate(serverFingerprint);

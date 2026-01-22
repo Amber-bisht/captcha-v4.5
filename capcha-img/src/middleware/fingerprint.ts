@@ -11,16 +11,23 @@ declare global {
 }
 
 /**
+ * Get Client IP with Cloudflare support
+ */
+export function getClientIp(req: Request): string {
+  return (req.headers['cf-connecting-ip'] as string) ||
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
+    (req.headers['x-real-ip'] as string) ||
+    req.socket.remoteAddress ||
+    'unknown';
+}
+
+/**
  * Extract browser fingerprint from request
  * NOTE: Client-provided headers like x-screen-width can be spoofed
  * These are used for additional context but NOT for security decisions
  */
 export function extractFingerprint(req: Request): BrowserFingerprint {
-  const ip =
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
-    (req.headers['x-real-ip'] as string) ||
-    req.socket.remoteAddress ||
-    'unknown';
+  const ip = getClientIp(req);
 
   const userAgent = req.headers['user-agent'] || 'unknown';
   const acceptLanguage = req.headers['accept-language'] || 'unknown';
@@ -53,11 +60,7 @@ export function extractFingerprint(req: Request): BrowserFingerprint {
  */
 export function generateServerFingerprint(req: Request, sessionEntropy?: string): string {
   // Extract IP - this comes from the connection, not headers
-  const ip =
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0] ||
-    (req.headers['x-real-ip'] as string) ||
-    req.socket.remoteAddress ||
-    'unknown';
+  const ip = getClientIp(req);
 
   // User-Agent can be spoofed but adds some protection
   const userAgent = req.headers['user-agent'] || 'unknown';
