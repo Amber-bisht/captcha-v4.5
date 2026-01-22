@@ -22,7 +22,7 @@ import { challengeStore } from './utils/challengeStore';
 import { sessionManager } from './security/sessionManager';
 import { deviceReputation } from './security/deviceReputation';
 // REDIS
-import { setWithTTL, exists, KEYS } from './config/redis';
+import { setWithTTL, exists, KEYS, redis } from './config/redis';
 // SECURITY MONITORING
 import { SecurityLogger } from './utils/securityLogger';
 import { MetricsService } from './utils/metricsService';
@@ -280,6 +280,78 @@ app.post('/api/admin/ratelimit', verifyAdminKey, async (req: Request, res: Respo
 app.get('/api/admin/ratelimit', verifyAdminKey, async (req: Request, res: Response) => {
   const configs = await RateLimitConfigModel.find({});
   res.json({ success: true, configs });
+});
+
+// =====================================================
+// ADMIN API: Reset All Rate Limits
+// =====================================================
+app.post('/api/admin/reset-rate-limits', verifyAdminKey, async (req: Request, res: Response) => {
+  try {
+    // Clear all rate limit keys from Redis
+    const keys = await redis.keys('ratelimit:*');
+    if (keys.length > 0) {
+      await redis.del(...keys);
+    }
+
+    SecurityLogger.info('Admin reset all rate limits', { keysCleared: keys.length });
+    res.json({ success: true, message: `Cleared ${keys.length} rate limit entries` });
+  } catch (error) {
+    console.error('Error resetting rate limits:', error);
+    res.status(500).json({ error: 'Failed to reset rate limits' });
+  }
+});
+
+// =====================================================
+// ADMIN API: Unban All Devices
+// =====================================================
+app.post('/api/admin/unban-all', verifyAdminKey, async (req: Request, res: Response) => {
+  try {
+    // Get all banned device fingerprints
+    const bannedDevices = await redis.smembers('banned_devices');
+    let unbannedCount = 0;
+
+    for (const fingerprint of bannedDevices) {
+      await deviceReputation.unbanDevice(fingerprint);
+      unbannedCount++;
+    }
+
+    // Clear the banned devices set
+    await redis.del('banned_devices');
+
+    // Also clear velocity tracking
+    const velocityKeys = await redis.keys('velocity:*');
+    if (velocityKeys.length > 0) {
+      await redis.del(...velocityKeys);
+    }
+
+    SecurityLogger.info('Admin unbanned all devices', { unbannedCount, velocityKeysCleared: velocityKeys.length });
+    res.json({
+      success: true,
+      message: `Unbanned ${unbannedCount} devices, cleared ${velocityKeys.length} velocity records`
+    });
+  } catch (error) {
+    console.error('Error unbanning devices:', error);
+    res.status(500).json({ error: 'Failed to unban devices' });
+  }
+});
+
+// =====================================================
+// ADMIN API: Reset All Metrics
+// =====================================================
+app.post('/api/admin/reset-metrics', verifyAdminKey, async (req: Request, res: Response) => {
+  try {
+    // Clear all metrics keys from Redis
+    const metricsKeys = await redis.keys('captcha:metrics:*');
+    if (metricsKeys.length > 0) {
+      await redis.del(...metricsKeys);
+    }
+
+    SecurityLogger.info('Admin reset all metrics', { keysCleared: metricsKeys.length });
+    res.json({ success: true, message: `Cleared ${metricsKeys.length} metrics entries` });
+  } catch (error) {
+    console.error('Error resetting metrics:', error);
+    res.status(500).json({ error: 'Failed to reset metrics' });
+  }
 });
 
 // =====================================================
