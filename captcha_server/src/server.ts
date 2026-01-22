@@ -29,9 +29,11 @@ import { MetricsService } from './utils/metricsService';
 import { connectMongo } from './config/mongo';
 import RateLimitConfigModel from './models/RateLimitConfig';
 import AdminKeyModel from './models/AdminKey';
+import { seedAdminKey } from './security/adminKeySeeder';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
 
 // Allowed origins
 const ALLOWED_ORIGINS = [
@@ -299,6 +301,7 @@ app.get('/health', (req: Request, res: Response) => {
 
 async function startServer() {
   await connectMongo();
+  await seedAdminKey();
   await rateLimitManager.init();
   app.listen(PORT, () => {
     console.log(`Server is running at http://localhost:${PORT}`);
