@@ -95,6 +95,7 @@ export class MetricsService {
             timingAttacks,
             solveTimeSum,
             solveTimeCount,
+            bannedDevicesCount,
         ] = await Promise.all([
             redis.get(METRICS.verifySuccess),
             redis.get(METRICS.verifyFail),
@@ -102,6 +103,7 @@ export class MetricsService {
             redis.get(METRICS.timingAttacks),
             redis.get(METRICS.solveTimeSum),
             redis.get(METRICS.solveTimeCount),
+            redis.scard('banned_devices'),  // Count of banned devices
         ]);
 
         // Get unique fingerprints count for today
@@ -120,7 +122,8 @@ export class MetricsService {
             security: {
                 replays: parseInt(replays || '0'),
                 timingAttacks: parseInt(timingAttacks || '0'),
-                uniqueDailyFingerprints: uniqueFingerprints
+                uniqueDailyFingerprints: uniqueFingerprints,
+                bannedAttempts: bannedDevicesCount || 0,
             },
             performance: {
                 avgSolveTimeMs: Math.round(avgSolveTime),
