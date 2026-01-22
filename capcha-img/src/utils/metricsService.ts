@@ -194,7 +194,41 @@ export class MetricsService {
         };
     }
 
-    // ... getHourlyStats omitted for brevity
+    /**
+     * Get hourly success/fail rates for the last N hours
+     */
+    static async getHourlyStats(hours: number = 24): Promise<Array<{
+        hour: string;
+        success: number;
+        fail: number;
+        rate: number;
+    }>> {
+        const stats: Array<{ hour: string; success: number; fail: number; rate: number }> = [];
+        const now = new Date();
+
+        for (let i = 0; i < hours; i++) {
+            const date = new Date(now.getTime() - i * 60 * 60 * 1000);
+            const hourKey = date.toISOString().slice(0, 13);
+
+            const [success, fail] = await Promise.all([
+                redisClient.get(METRICS.hourlySuccess(hourKey)),
+                redisClient.get(METRICS.hourlyFail(hourKey)),
+            ]);
+
+            const s = parseInt(success || '0');
+            const f = parseInt(fail || '0');
+            const total = s + f;
+
+            stats.push({
+                hour: hourKey,
+                success: s,
+                fail: f,
+                rate: total > 0 ? Math.round((s / total) * 100) : 0,
+            });
+        }
+
+        return stats.reverse();
+    }
 }
 
 export default MetricsService;
