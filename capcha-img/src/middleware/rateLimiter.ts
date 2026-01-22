@@ -86,7 +86,7 @@ class RateLimitManager {
 
   async init() {
     console.log('🔄 Initializing Rate Limiters...');
-    await this.loadOrCreateInfo('request-challenge', 60 * 60 * 1000, 10, 'Too many challenge requests.');
+    await this.loadOrCreateInfo('request-challenge', 60 * 60 * 1000, 30, 'Too many challenge requests.');
     await this.loadOrCreateInfo('verify', 60 * 60 * 1000, 60, 'Too many verification attempts.');
     console.log('✅ Rate Limiters Initialized');
   }

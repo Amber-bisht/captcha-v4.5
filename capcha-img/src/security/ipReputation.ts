@@ -111,7 +111,8 @@ export class IPReputationService {
     constructor(config?: IPQualityScoreConfig) {
         this.apiKey = config?.apiKey || process.env.IPQS_API_KEY;
         this.strictness = config?.strictness ?? 1;
-        this.timeout = config?.timeout ?? 3000;
+        // Reduced timeout to prevent slow init - fallback to local heuristics if API is slow
+        this.timeout = config?.timeout ?? 1500;
         this.enabled = !!this.apiKey;
     }
 

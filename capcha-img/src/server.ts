@@ -164,7 +164,29 @@ const verifyAdminKey = async (req: Request, res: Response, next: NextFunction) =
 // =====================================================
 app.get('/api/init', botKiller, async (req: Request, res: Response) => {
   try {
-    const risk = await RiskAnalyzer.calculateRiskScore(req);
+    // Use timeout to prevent slow responses when IP reputation API is slow
+    const riskPromise = RiskAnalyzer.calculateRiskScore(req);
+    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000));
+
+    const result = await Promise.race([riskPromise, timeoutPromise]);
+
+    // Default to low-risk if timeout occurred
+    const risk = result ?? {
+      score: 0,
+      level: 'low' as const,
+      factors: [],
+      challengeConfig: {
+        skipCaptcha: false,
+        difficulty: 'standard' as const,
+        gridSize: 9,
+        requireMultipleRounds: false,
+        addImageDegradation: false,
+        requireProofOfWork: true,
+        powDifficulty: 4,
+        powAlgorithm: 'sha256' as const,
+        recommendedChallenge: 'spatial' as const
+      }
+    };
 
     // ECONOMIC TAX: Datacenters/VPNs get much harder PoW
     // Scrypt is now used for high risk, so simple difficulty adjustment logic 
