@@ -308,7 +308,7 @@ app.post(
       }
 
       if (
-        captcha === stored.challenge!.text
+        captcha.toLowerCase() === stored.challenge!.text.toLowerCase()
       ) {
         // Clear challenge to prevent reuse
         await challengeStore.delete(challengeId);

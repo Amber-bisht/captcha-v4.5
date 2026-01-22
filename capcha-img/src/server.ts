@@ -362,7 +362,7 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
         isCorrect = false;
       }
     } else {
-      isCorrect = textAnswer === stored.textAnswer;
+      isCorrect = textAnswer?.toLowerCase() === stored.textAnswer?.toLowerCase();
       // Text entry requires at least 1.5s
       if (solveTime < 1500) {
         suspiciousActivity = {
