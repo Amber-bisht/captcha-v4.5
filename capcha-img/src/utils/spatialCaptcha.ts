@@ -56,21 +56,27 @@ export class SpatialCaptchaGenerator {
             totalFrames: this.totalFrames,
             startFrame: startFrameIndex,
             targetFrame: targetFrameIndex,
-            expiresAt: Date.now() + 5 * 60 * 1000
+            // SECURITY FIX P2.2: Randomize expiration (4-6 minutes)
+            expiresAt: Date.now() + Math.ceil((4 + Math.random() * 2) * 60 * 1000)
         };
     }
 
     /**
      * Generates a complex SVG shape that is hard for AI to "center" or "orient"
      * Uses random paths, gradients, and overlapping elements
+     * M5 SECURITY: Marker position and style randomized to prevent pattern recognition
      */
     private generateComplexShape(): string {
-        const colors = [
-            '#FF5733', '#33FF57', '#3357FF', '#F333FF',
-            '#33FFF3', '#F3FF33', '#FF3380', '#80FF33'
-        ];
-        const color1 = colors[Math.floor(Math.random() * colors.length)];
-        const color2 = colors[Math.floor(Math.random() * colors.length)];
+        // L3 SECURITY: Expanded color palette with HSL generation for maximum visual entropy
+        const generateRandomColor = () => {
+            const h = Math.floor(Math.random() * 360);        // Full hue range
+            const s = 60 + Math.floor(Math.random() * 40);    // 60-100% saturation
+            const l = 45 + Math.floor(Math.random() * 25);    // 45-70% lightness
+            return `hsl(${h}, ${s}%, ${l}%)`;
+        };
+
+        const color1 = generateRandomColor();
+        const color2 = generateRandomColor();
 
         let svg = `<svg width="${this.frameSize}" height="${this.frameSize}" xmlns="http://www.w3.org/2000/svg">`;
         svg += `<defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:${color1};stop-opacity:1" /><stop offset="100%" style="stop-color:${color2};stop-opacity:1" /></linearGradient></defs>`;
@@ -84,11 +90,30 @@ export class SpatialCaptchaGenerator {
             svg += `<path d="${d}" stroke="url(#grad)" fill="none" stroke-width="${Math.random() * 10 + 2}" />`;
         }
 
-        // Add a "marker" that is recognizable to humans but ambiguous to bots
-        const markerX = this.frameSize / 2;
-        const markerY = 20; // Near the top
-        svg += `<circle cx="${markerX}" cy="${markerY}" r="8" fill="white" stroke="black" stroke-width="2" />`;
-        svg += `<path d="M ${markerX - 10} ${markerY + 10} L ${markerX} ${markerY} L ${markerX + 10} ${markerY + 10}" stroke="white" fill="none" stroke-width="3" />`;
+        // M5 SECURITY: Randomized "upright" marker - varies in style and position
+        const markerStyles = ['circle', 'arrow', 'triangle', 'dot'];
+        const markerStyle = markerStyles[Math.floor(Math.random() * markerStyles.length)];
+
+        // Marker angle offset - positioned near the top but with slight random offset
+        const markerX = this.frameSize / 2 + (Math.random() - 0.5) * 20;
+        const markerY = 15 + Math.random() * 15; // Between 15-30px from top
+        const markerColor = Math.random() > 0.5 ? 'white' : color1;
+
+        switch (markerStyle) {
+            case 'circle':
+                svg += `<circle cx="${markerX}" cy="${markerY}" r="${6 + Math.random() * 4}" fill="${markerColor}" stroke="black" stroke-width="2" />`;
+                break;
+            case 'arrow':
+                svg += `<path d="M ${markerX - 8} ${markerY + 8} L ${markerX} ${markerY} L ${markerX + 8} ${markerY + 8}" stroke="${markerColor}" fill="none" stroke-width="3" />`;
+                break;
+            case 'triangle':
+                svg += `<polygon points="${markerX},${markerY - 8} ${markerX - 8},${markerY + 8} ${markerX + 8},${markerY + 8}" fill="${markerColor}" stroke="black" stroke-width="1" />`;
+                break;
+            case 'dot':
+                svg += `<circle cx="${markerX}" cy="${markerY}" r="4" fill="${markerColor}" />`;
+                svg += `<circle cx="${markerX}" cy="${markerY}" r="8" fill="none" stroke="${markerColor}" stroke-width="2" />`;
+                break;
+        }
 
         svg += `</svg>`;
         return svg;

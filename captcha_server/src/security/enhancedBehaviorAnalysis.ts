@@ -62,7 +62,7 @@ export class EnhancedBehaviorAnalyzer {
     static analyze(
         mouseEvents: MouseEvent[],
         keyboardEvents: KeyboardEvent[],
-        metadata: { totalTime: number; focusLostCount?: number }
+        metadata: { totalTime: number; focusLostCount?: number; scrollEvents?: { y: number; timestamp: number }[] }
     ): BehaviorScore {
         const flags: string[] = [];
         let suspicionScore = 0;
@@ -73,6 +73,7 @@ export class EnhancedBehaviorAnalyzer {
             keystrokes: keyboardEvents.length,
             totalTime: metadata.totalTime,
             focusLostCount: metadata.focusLostCount || 0,
+            scrollEvents: metadata.scrollEvents?.length || 0,
         };
 
         // Calculate mouse metrics
@@ -86,6 +87,53 @@ export class EnhancedBehaviorAnalyzer {
             metrics.straightLineRatio = this.calculateStraightLineRatio(movements);
             metrics.curveComplexity = this.calculateCurveComplexity(movements);
             metrics.jitterScore = this.calculateJitter(movements);
+        }
+
+        // ===== Phase C: Keystroke Timing Analysis =====
+        if (keyboardEvents.length >= 4) {
+            const keystrokeAnalysis = this.analyzeKeystrokeTiming(keyboardEvents);
+            metrics.avgKeypressTime = keystrokeAnalysis.avgKeypressTime;
+            metrics.typingSpeed = keystrokeAnalysis.typingSpeed;
+            metrics.typingRhythmVariance = keystrokeAnalysis.rhythmVariance;
+
+            // Check for bot-like typing patterns
+            if (keystrokeAnalysis.rhythmVariance < 5) {
+                flags.push('Machine-like typing rhythm');
+                suspicionScore += 25;
+            }
+
+            if (keystrokeAnalysis.avgKeypressTime < 20) {
+                flags.push('Superhuman keypress speed');
+                suspicionScore += 30;
+            }
+
+            if (keystrokeAnalysis.typingSpeed > 200) { // > 200 WPM
+                flags.push('Superhuman typing speed');
+                suspicionScore += 35;
+            }
+
+            // Check for simultaneous key events (bots often fire all at once)
+            const simultaneousKeys = this.countSimultaneousKeys(keyboardEvents);
+            if (simultaneousKeys > 2) {
+                flags.push('Simultaneous key events detected');
+                suspicionScore += 20;
+            }
+        }
+
+        // ===== Phase C: Scroll Pattern Analysis =====
+        if (metadata.scrollEvents && metadata.scrollEvents.length >= 3) {
+            const scrollAnalysis = this.analyzeScrollPatterns(metadata.scrollEvents);
+            metrics.scrollVariance = scrollAnalysis.variance;
+
+            if (scrollAnalysis.variance < 10) {
+                flags.push('Uniform scroll behavior');
+                suspicionScore += 15;
+            }
+
+            if (scrollAnalysis.avgSpeed > 5000) { // pixels per second
+                flags.push('Superhuman scroll speed');
+                suspicionScore += 20;
+            }
         }
 
         // Analyze timing
@@ -128,6 +176,13 @@ export class EnhancedBehaviorAnalyzer {
             }
         }
 
+        // ===== Phase C: Calculate Overall Entropy Score =====
+        const entropyScore = this.calculateEntropyScore(mouseEvents, keyboardEvents, metadata);
+        if (entropyScore < 20) {
+            flags.push('Low behavioral entropy');
+            suspicionScore += 20;
+        }
+
         // Calculate final scores
         const score = Math.min(suspicionScore, 100);
         const humanProbability = Math.max(0, 100 - score);
@@ -140,6 +195,129 @@ export class EnhancedBehaviorAnalyzer {
 
         return { score, humanProbability, riskLevel, flags, metrics };
     }
+
+    /**
+     * Phase C: Analyze keystroke timing patterns
+     */
+    private static analyzeKeystrokeTiming(events: KeyboardEvent[]): {
+        avgKeypressTime: number;
+        typingSpeed: number;
+        rhythmVariance: number;
+    } {
+        const intervals: number[] = [];
+        const keyPressDurations: number[] = [];
+        const keyMap = new Map<string, number>();
+
+        for (const event of events) {
+            if (event.type === 'down') {
+                keyMap.set(event.key, event.timestamp);
+            } else if (event.type === 'up') {
+                const downTime = keyMap.get(event.key);
+                if (downTime) {
+                    keyPressDurations.push(event.timestamp - downTime);
+                    keyMap.delete(event.key);
+                }
+            }
+        }
+
+        // Calculate intervals between keystrokes
+        const downEvents = events.filter(e => e.type === 'down');
+        for (let i = 1; i < downEvents.length; i++) {
+            intervals.push(downEvents[i].timestamp - downEvents[i - 1].timestamp);
+        }
+
+        const avgKeypressTime = keyPressDurations.length > 0
+            ? keyPressDurations.reduce((a, b) => a + b, 0) / keyPressDurations.length
+            : 0;
+
+        const avgInterval = intervals.length > 0
+            ? intervals.reduce((a, b) => a + b, 0) / intervals.length
+            : 0;
+
+        // Words per minute (assuming 5 chars per word)
+        const typingSpeed = avgInterval > 0 ? (60000 / avgInterval) / 5 : 0;
+
+        const rhythmVariance = this.calculateVariance(intervals);
+
+        return { avgKeypressTime, typingSpeed, rhythmVariance };
+    }
+
+    /**
+     * Phase C: Detect simultaneous key events
+     */
+    private static countSimultaneousKeys(events: KeyboardEvent[]): number {
+        const windowMs = 5; // 5ms window
+        let simultaneousCount = 0;
+
+        for (let i = 1; i < events.length; i++) {
+            if (Math.abs(events[i].timestamp - events[i - 1].timestamp) < windowMs) {
+                simultaneousCount++;
+            }
+        }
+
+        return simultaneousCount;
+    }
+
+    /**
+     * Phase C: Analyze scroll patterns
+     */
+    private static analyzeScrollPatterns(scrollEvents: { y: number; timestamp: number }[]): {
+        variance: number;
+        avgSpeed: number;
+    } {
+        const speeds: number[] = [];
+        const deltaYs: number[] = [];
+
+        for (let i = 1; i < scrollEvents.length; i++) {
+            const dy = Math.abs(scrollEvents[i].y - scrollEvents[i - 1].y);
+            const dt = scrollEvents[i].timestamp - scrollEvents[i - 1].timestamp;
+
+            deltaYs.push(dy);
+            if (dt > 0) {
+                speeds.push(dy / dt * 1000); // pixels per second
+            }
+        }
+
+        return {
+            variance: this.calculateVariance(deltaYs),
+            avgSpeed: speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0,
+        };
+    }
+
+    /**
+     * Phase C: Calculate overall behavioral entropy
+     */
+    private static calculateEntropyScore(
+        mouseEvents: MouseEvent[],
+        keyboardEvents: KeyboardEvent[],
+        metadata: { totalTime: number; scrollEvents?: { y: number; timestamp: number }[] }
+    ): number {
+        let entropy = 0;
+
+        // More events = higher entropy
+        entropy += Math.min(mouseEvents.length / 10, 20);
+        entropy += Math.min(keyboardEvents.length / 5, 20);
+        entropy += Math.min((metadata.scrollEvents?.length || 0) / 3, 10);
+
+        // Time spent adds entropy
+        entropy += Math.min(metadata.totalTime / 1000, 20);
+
+        // Variety in event types
+        const eventTypes = new Set([
+            ...mouseEvents.map(e => e.type),
+            ...keyboardEvents.map(e => e.type),
+        ]);
+        entropy += eventTypes.size * 5;
+
+        // Position variety adds entropy
+        if (mouseEvents.length > 0) {
+            const uniquePositions = new Set(mouseEvents.map(e => `${Math.floor(e.x / 50)},${Math.floor(e.y / 50)}`));
+            entropy += Math.min(uniquePositions.size * 2, 10);
+        }
+
+        return Math.min(entropy, 100);
+    }
+
 
     private static calculateMouseMetrics(events: MouseEvent[]) {
         let distance = 0;

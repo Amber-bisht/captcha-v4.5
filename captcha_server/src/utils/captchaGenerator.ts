@@ -11,7 +11,9 @@ export class CaptchaGenerator {
   static generateChallenge(): CaptchaChallenge {
     const challengeId = crypto.randomBytes(16).toString('hex');
     const createdAt = Date.now();
-    const expiresAt = createdAt + CHALLENGE_EXPIRATION_MINUTES * 60 * 1000;
+    // SECURITY FIX P2.2: Randomize expiration (4-6 minutes) to prevent timing analysis
+    const randomMinutes = 4 + Math.random() * 2;
+    const expiresAt = createdAt + Math.ceil(randomMinutes * 60 * 1000);
 
     // Enhanced configuration with anti-OCR techniques
     const config: CaptchaConfig = {

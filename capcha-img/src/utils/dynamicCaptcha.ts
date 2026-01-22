@@ -45,7 +45,8 @@ export class DynamicCaptchaGenerator {
             id,
             answer: finalAnswer,
             image,
-            expiresAt: Date.now() + 5 * 60 * 1000
+            // SECURITY FIX P2.2: Randomize expiration (4-6 minutes)
+            expiresAt: Date.now() + Math.ceil((4 + Math.random() * 2) * 60 * 1000)
         };
     }
 

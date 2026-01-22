@@ -64,7 +64,92 @@ export const TTL = {
     SESSION: 5 * 60,          // 5 minutes
     TOKEN: 10 * 60,           // 10 minutes
     RATE_LIMIT: 60 * 60,      // 1 hour
-    DEVICE: 24 * 60 * 60,     // 24 hours
+    DEVICE: 7 * 24 * 60 * 60, // 7 days (updated for device profile persistence)
+};
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+/**
+ * Set a value with expiration (in seconds)
+ */
+export async function setWithTTL(key: string, value: string | object, ttlSeconds: number): Promise<void> {
+    const stringValue = typeof value === 'string' ? value : JSON.stringify(value);
+    await redisClient.setex(key, ttlSeconds, stringValue);
+}
+
+/**
+ * Get a value and parse as JSON if possible
+ */
+export async function getJSON<T>(key: string): Promise<T | null> {
+    const value = await redisClient.get(key);
+    if (!value) return null;
+
+    try {
+        return JSON.parse(value) as T;
+    } catch {
+        return value as unknown as T;
+    }
+}
+
+/**
+ * Delete a key
+ */
+export async function del(key: string): Promise<void> {
+    await redisClient.del(key);
+}
+
+/**
+ * Add to a set (for unique tracking like banned devices)
+ */
+export async function addToSet(key: string, value: string): Promise<void> {
+    await redisClient.sadd(key, value);
+}
+
+/**
+ * Remove from a set
+ */
+export async function removeFromSet(key: string, value: string): Promise<void> {
+    await redisClient.srem(key, value);
+}
+
+/**
+ * Check if value exists in set
+ */
+export async function isInSet(key: string, value: string): Promise<boolean> {
+    return (await redisClient.sismember(key, value)) === 1;
+}
+
+/**
+ * Get set size
+ */
+export async function getSetSize(key: string): Promise<number> {
+    return await redisClient.scard(key);
+}
+
+/**
+ * Scan keys matching a pattern (use carefully in production)
+ */
+export async function scanKeys(pattern: string): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor = '0';
+
+    do {
+        const [newCursor, foundKeys] = await redisClient.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = newCursor;
+        keys.push(...foundKeys);
+    } while (cursor !== '0');
+
+    return keys;
+}
+
+// ============================================
+// KEY PATTERNS
+// ============================================
+export const KEYS = {
+    device: (fingerprintHash: string) => `${REDIS_KEYS.DEVICE_REP}${fingerprintHash}`,
+    bannedDevices: () => 'captcha:banned_devices',
 };
 
 /**
@@ -90,3 +175,4 @@ export function isRedisConnected(): boolean {
 }
 
 export default redisClient;
+

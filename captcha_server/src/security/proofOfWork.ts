@@ -2,9 +2,12 @@
  * Proof-of-Work Challenge System
  * Requires clients to solve computational puzzles before accessing CAPTCHA
  * This adds significant cost to automated attacks
+ * 
+ * NOW USES REDIS for challenge storage
  */
 
 import crypto from 'crypto';
+import { powChallengeStore, StoredPoWChallenge } from './powChallengeStore';
 
 export interface PoWChallenge {
     id: string;
@@ -29,28 +32,22 @@ export interface PoWVerificationResult {
 }
 
 export interface PoWConfig {
-    // Base difficulty (number of leading zeros)
     baseDifficulty: number;
-    // Difficulty multiplier for suspicious requests
     suspiciousDifficultyMultiplier: number;
-    // Challenge expiration in milliseconds
     expirationMs: number;
-    // Minimum acceptable compute time (to detect pre-computed solutions)
     minComputeTimeMs: number;
-    // Maximum acceptable compute time
     maxComputeTimeMs: number;
 }
 
 const DEFAULT_CONFIG: PoWConfig = {
-    baseDifficulty: 4, // 4 leading zeros = ~65k iterations on average
+    baseDifficulty: 5,
     suspiciousDifficultyMultiplier: 2,
-    expirationMs: 60000, // 1 minute
-    minComputeTimeMs: 100, // At least 100ms
-    maxComputeTimeMs: 30000, // Max 30 seconds
+    expirationMs: 45000,
+    minComputeTimeMs: 200,
+    maxComputeTimeMs: 30000,
 };
 
-// Store for active challenges
-const challengeStore = new Map<string, PoWChallenge & { createdAt: number }>();
+// challengeStore is now Redis-backed via powChallengeStore
 
 export class ProofOfWorkSystem {
     private config: PoWConfig;
@@ -63,7 +60,7 @@ export class ProofOfWorkSystem {
      * Generate a new PoW challenge
      * @param riskLevel - Higher risk = higher difficulty
      */
-    generateChallenge(riskLevel: 'low' | 'medium' | 'high' | 'critical' = 'low'): PoWChallenge {
+    async generateChallenge(riskLevel: 'low' | 'medium' | 'high' | 'critical' = 'low'): Promise<PoWChallenge> {
         const id = crypto.randomBytes(16).toString('hex');
         const prefix = crypto.randomBytes(32).toString('hex');
         const timestamp = Date.now();
@@ -91,11 +88,8 @@ export class ProofOfWorkSystem {
             algorithm: 'sha256',
         };
 
-        // Store challenge
-        challengeStore.set(id, { ...challenge, createdAt: Date.now() });
-
-        // Clean up old challenges periodically
-        this.cleanupExpiredChallenges();
+        // Store challenge in Redis
+        await powChallengeStore.set(id, { ...challenge, createdAt: Date.now() });
 
         return challenge;
     }
@@ -103,16 +97,16 @@ export class ProofOfWorkSystem {
     /**
      * Verify a PoW solution
      */
-    verifySolution(solution: PoWSolution, clientComputeTime?: number): PoWVerificationResult {
+    async verifySolution(solution: PoWSolution, clientComputeTime?: number): Promise<PoWVerificationResult> {
         // Get the challenge
-        const stored = challengeStore.get(solution.challengeId);
+        const stored = await powChallengeStore.get(solution.challengeId);
         if (!stored) {
             return { valid: false, error: 'Challenge not found or expired' };
         }
 
         // Check expiration
         if (Date.now() > stored.expiresAt) {
-            challengeStore.delete(solution.challengeId);
+            await powChallengeStore.delete(solution.challengeId);
             return { valid: false, error: 'Challenge expired' };
         }
 
@@ -148,7 +142,7 @@ export class ProofOfWorkSystem {
         }
 
         // Delete the challenge to prevent reuse
-        challengeStore.delete(solution.challengeId);
+        await powChallengeStore.delete(solution.challengeId);
 
         // Calculate hash rate if compute time is provided
         let hashRate: number | undefined;
@@ -180,18 +174,6 @@ export class ProofOfWorkSystem {
             }
         }
         return count;
-    }
-
-    /**
-     * Cleanup expired challenges
-     */
-    private cleanupExpiredChallenges(): void {
-        const now = Date.now();
-        for (const [id, challenge] of challengeStore.entries()) {
-            if (now > challenge.expiresAt) {
-                challengeStore.delete(id);
-            }
-        }
     }
 
     /**

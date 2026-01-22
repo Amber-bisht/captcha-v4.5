@@ -3,7 +3,13 @@ import crypto from 'crypto';
 import { TokenPayload, TokenResponse, TokenVerificationResult } from '../types/token';
 import RedisStore from './redisStore';
 
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+// SECURITY FIX: Require JWT_SECRET to be explicitly set
+const JWT_SECRET_RAW = process.env.JWT_SECRET;
+if (!JWT_SECRET_RAW) {
+  console.error('[FATAL] JWT_SECRET environment variable is required but not set');
+  process.exit(1);
+}
+const JWT_SECRET: string = JWT_SECRET_RAW;
 // SECURITY: Reduced from 10 minutes to 90 seconds to minimize replay attack window
 const TOKEN_EXPIRATION_SECONDS = 90;
 

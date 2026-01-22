@@ -225,7 +225,7 @@ export class UltimateSecurityOrchestrator {
         components++;
 
         // ========== LAYER 9: Device Reputation ==========
-        results.deviceReputation = deviceReputation.evaluate(fingerprintHash);
+        results.deviceReputation = await deviceReputation.evaluate(fingerprintHash);
         if (results.deviceReputation.isBanned) {
             totalScore = 100;
             auditLog.push(`[REPUTATION] Device is BANNED: ${results.deviceReputation.banReason}`);
@@ -324,7 +324,7 @@ export class UltimateSecurityOrchestrator {
     /**
      * Generate comprehensive challenge suite
      */
-    generateChallenges(assessment: UltimateSecurityAssessment): ChallengeSuite {
+    async generateChallenges(assessment: UltimateSecurityAssessment): Promise<ChallengeSuite> {
         const riskLevel = assessment.overallRiskLevel;
 
         // Multi-stage challenge
@@ -337,7 +337,7 @@ export class UltimateSecurityOrchestrator {
         // PoW with difficulty based on risk
         let pow: PoWChallenge | undefined;
         if (riskLevel !== 'low') {
-            pow = this.powSystem.generateChallenge(riskLevel);
+            pow = await this.powSystem.generateChallenge(riskLevel);
         }
 
         // Invisible challenge for high risk
@@ -352,13 +352,13 @@ export class UltimateSecurityOrchestrator {
     /**
      * Record challenge result for device reputation
      */
-    recordChallengeResult(
+    async recordChallengeResult(
         fingerprintHash: string,
         success: boolean,
         ip: string,
         suspicious?: { type: string; details: string; severity: 'low' | 'medium' | 'high' }
-    ): void {
-        deviceReputation.recordChallengeAttempt(fingerprintHash, success, ip, suspicious);
+    ): Promise<void> {
+        await deviceReputation.recordChallengeAttempt(fingerprintHash, success, ip, suspicious);
     }
 
     /**

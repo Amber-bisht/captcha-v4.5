@@ -89,7 +89,7 @@ export class RiskAnalyzer {
 
         // 5. Device Reputation Check (NEW)
         if ((req as any).fingerprint?.hash) {
-            const deviceStatus = deviceReputation.evaluate((req as any).fingerprint.hash);
+            const deviceStatus = await deviceReputation.evaluate((req as any).fingerprint.hash);
             if (deviceStatus.reputationLevel === 'malicious') {
                 score += 50;
                 factors.push({ name: 'malicious_device', weight: 50, details: 'Device flagged as malicious' });

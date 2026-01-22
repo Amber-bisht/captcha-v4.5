@@ -23,6 +23,7 @@ import { PoWManager } from './security/powManager';
 import { RiskAnalyzer } from './security/riskAnalyzer';
 import { deviceReputation } from './security/deviceReputation';
 import { SecurityLogger } from './utils/securityLogger';
+import { MetricsService } from './utils/metricsService';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -37,11 +38,25 @@ const ALLOWED_ORIGINS = [
 
 const CAPTCHA_SITE_KEY = process.env.CAPTCHA_SITE_KEY || 'sk_captcha_asprin_default_site_key';
 const CAPTCHA_SECRET_KEY = process.env.CAPTCHA_SECRET_KEY || 'sk_captcha_asprin_default_secret_key';
-const JWT_SECRET = process.env.JWT_SECRET || 'default-jwt-secret';
+
+// SECURITY FIX C3: Require JWT_SECRET to be explicitly set - no fallback
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('[FATAL] JWT_SECRET environment variable is required but not set');
+  process.exit(1);
+}
 
 app.use(helmet({ crossOriginEmbedderPolicy: false, crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(cors({
-  origin: (origin, callback) => { if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true); return callback(new Error('CORS blocked'), false); },
+  origin: (origin, callback) => {
+    // SECURITY FIX H4: Reject requests with no origin to prevent script-based attacks
+    if (!origin) {
+      console.warn('[CORS] Blocked request with no origin');
+      return callback(new Error('Origin required'), false);
+    }
+    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error('CORS blocked'), false);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Captcha-Site-Key', 'Authorization', 'X-PoW-Solution', 'X-PoW-Nonce'],
@@ -253,10 +268,11 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
     const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
 
     // ===== DEVICE REPUTATION CHECK =====
-    const deviceStatus = deviceReputation.evaluate(serverFingerprint);
+    const deviceStatus = await deviceReputation.evaluate(serverFingerprint);
 
     // Block banned devices immediately
     if (deviceStatus.isBanned) {
+      await MetricsService.recordSecurityEvent('banned_attempt');
       SecurityLogger.warn('Banned Device Verification Attempt', {
         ip,
         fingerprint: serverFingerprint,
@@ -273,11 +289,12 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
     const fingerprintAnalysis = analyzeFingerprint(req);
     if (!fingerprintAnalysis.isConsistent) {
       // Record suspicious activity but don't block (could be legitimate edge cases)
-      deviceReputation.recordSuspiciousActivity(serverFingerprint, {
+      await deviceReputation.recordSuspiciousActivity(serverFingerprint, {
         type: 'fingerprint_anomaly',
         details: `Header inconsistencies: ${fingerprintAnalysis.anomalies.join(', ')}`,
         severity: fingerprintAnalysis.suspicionScore > 50 ? 'high' : 'medium'
       });
+      await MetricsService.recordSecurityEvent('fingerprint_anomaly');
       SecurityLogger.warn('Fingerprint Anomaly Detected', {
         ip,
         fingerprint: serverFingerprint,
@@ -288,7 +305,8 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
 
     // Honeypot triggered - record high severity suspicious activity
     if (honeyPot) {
-      deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
+      await MetricsService.recordSecurityEvent('honeypot');
+      await deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
         type: 'honeypot_triggered',
         details: `Honeypot field filled: ${typeof honeyPot === 'string' ? honeyPot.substring(0, 50) : 'non-string'}`,
         severity: 'high'
@@ -299,7 +317,7 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
 
     const challengeId = sessionId;
     if (!challengeId || !token) {
-      deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
+      await deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
         type: 'missing_fields',
         details: `Missing: ${!challengeId ? 'sessionId' : ''} ${!token ? 'token' : ''}`,
         severity: 'medium'
@@ -309,7 +327,7 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
 
     const stored = await RedisStore.getChallenge(challengeId);
     if (!stored || Date.now() > stored.expiresAt) {
-      deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
+      await deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
         type: 'expired_challenge',
         details: 'Attempted to use expired or invalid challenge',
         severity: 'low'
@@ -320,7 +338,7 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
     const tokenVerification = await TokenService.verifyToken(token, serverFingerprint, ip);
     if (!tokenVerification.valid) {
       // Token manipulation is highly suspicious
-      deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
+      await deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, {
         type: 'token_invalid',
         details: `Token verification failed: ${tokenVerification.error}`,
         severity: 'high'
@@ -344,7 +362,7 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
         isCorrect = false;
       }
     } else {
-      isCorrect = textAnswer?.toLowerCase() === stored.textAnswer?.toLowerCase();
+      isCorrect = textAnswer === stored.textAnswer;
       // Text entry requires at least 1.5s
       if (solveTime < 1500) {
         suspiciousActivity = {
@@ -358,7 +376,7 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
 
     if (isCorrect) {
       // SUCCESS - Record positive reputation
-      deviceReputation.recordChallengeAttempt(serverFingerprint, true, ip);
+      await deviceReputation.recordChallengeAttempt(serverFingerprint, true, ip);
       await RedisStore.deleteChallenge(challengeId);
 
       // Generate success token with additional binding
@@ -370,20 +388,27 @@ app.post('/api/verify', botKiller, verificationRateLimiter, async (req: Request,
         type: 'challenge_success',
         details: { challengeType: stored.type, time: solveTime }
       });
+
+      // Track metrics
+      await MetricsService.recordVerification(true, stored.type as 'spatial' | 'text', solveTime);
+
       return res.json({ success: true, token: successToken.token });
     }
 
     // FAILURE - Record negative reputation
-    deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, suspiciousActivity);
+    await deviceReputation.recordChallengeAttempt(serverFingerprint, false, ip, suspiciousActivity);
 
     // Check if device should now be challenged more aggressively
-    const updatedStatus = deviceReputation.evaluate(serverFingerprint);
+    const updatedStatus = await deviceReputation.evaluate(serverFingerprint);
     SecurityLogger.info('Challenge Failed', {
       ip,
       fingerprint: serverFingerprint,
       type: 'challenge_failed',
       details: { reputationAfter: updatedStatus.reputationScore }
     });
+
+    // Track metrics
+    await MetricsService.recordVerification(false, stored.type as 'spatial' | 'text');
 
     res.json({ success: false, message: 'Incorrect' });
   } catch (error) {
@@ -407,6 +432,27 @@ app.post('/api/siteverify', async (req: Request, res: Response) => {
 
 app.get('/api/sitekey', (req, res) => res.json({ success: true, siteKey: CAPTCHA_SITE_KEY }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', redis: redisClient.status }));
+
+// =====================================================
+// METRICS ENDPOINT - For monitoring dashboards
+// =====================================================
+app.get('/api/metrics', async (req: Request, res: Response) => {
+  try {
+    const metrics = await MetricsService.getMetrics();
+    const hourlyStats = await MetricsService.getHourlyStats(24);
+
+    res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      metrics,
+      hourlyStats,
+    });
+  } catch (error) {
+    console.error('[METRICS] Error fetching metrics:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch metrics' });
+  }
+});
+
 
 async function startServer() {
   await initRedis();
