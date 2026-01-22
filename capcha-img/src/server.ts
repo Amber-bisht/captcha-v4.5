@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import cors from 'cors';
 import path from 'path';
 import helmet from 'helmet';
@@ -499,7 +500,30 @@ app.get('/api/admin/ratelimit', verifyAdminKey, async (req: Request, res: Respon
 });
 
 app.get('/api/sitekey', (req, res) => res.json({ success: true, siteKey: CAPTCHA_SITE_KEY }));
-app.get('/health', (req, res) => res.json({ status: 'healthy', redis: redisClient.status }));
+app.get('/health', (req, res) => {
+  const mongoStatus = mongoose.connection.readyState;
+  const statusMap = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting',
+  };
+
+  const isHealthy = mongoStatus === 1 && redisClient.status === 'ready';
+  const httpStatus = isHealthy ? 200 : 503;
+
+  res.status(httpStatus).json({
+    status: isHealthy ? 'healthy' : 'unhealthy',
+    timestamp: new Date().toISOString(),
+    service: 'capcha-img',
+    mongo: {
+      state: statusMap[mongoStatus as 0 | 1 | 2 | 3] || 'unknown',
+      readyState: mongoStatus,
+      host: mongoose.connection.host
+    },
+    redis: redisClient.status
+  });
+});
 
 // =====================================================
 // METRICS ENDPOINT - For monitoring dashboards

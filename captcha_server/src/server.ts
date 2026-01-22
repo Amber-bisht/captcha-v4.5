@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import path from 'path';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -296,7 +297,28 @@ app.get('/api/metrics', verifyAdminKey, async (req: Request, res: Response) => {
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
-  res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString(), service: 'captcha-server' });
+  const mongoStatus = mongoose.connection.readyState;
+  const statusMap = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting',
+  };
+
+  const isHealthy = mongoStatus === 1;
+  const httpStatus = isHealthy ? 200 : 503;
+
+  res.status(httpStatus).json({
+    status: isHealthy ? 'healthy' : 'unhealthy',
+    timestamp: new Date().toISOString(),
+    service: 'captcha-server',
+    mongo: {
+      state: statusMap[mongoStatus as 0 | 1 | 2 | 3] || 'unknown',
+      readyState: mongoStatus,
+      host: mongoose.connection.host,
+      db: mongoose.connection.name
+    }
+  });
 });
 
 async function startServer() {
