@@ -25,6 +25,7 @@
     "helmet": "^7.0.0",
     "ioredis": "^5.9.2",
     "jsonwebtoken": "^9.0.0",
+    "mongoose": "^9.1.5",
     "svg-captcha": "^1.4.0"
   },
   "devDependencies": {

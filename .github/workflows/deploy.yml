@@ -257,6 +257,7 @@ jobs:
           ABUSEIPDB_API_KEY=${{ secrets.ABUSEIPDB_API_KEY }}
           CAPTCHA_SITE_KEY=${{ secrets.CAPTCHA_SITE_KEY }}
           CAPTCHA_SECRET_KEY=${{ secrets.CAPTCHA_SECRET_KEY }}
+          MONGO_URI=mongodb://mongodb:27017/captcha_service
           ENVFILE
           EOF
 
@@ -287,8 +288,10 @@ jobs:
               environment:
                 - PORT=3000
                 - REDIS_URL=redis://redis:6379
+                - MONGO_URI=mongodb://mongodb:27017/captcha_service
               depends_on:
                 - redis
+                - mongodb
               networks:
                 - captcha-network
               healthcheck:
@@ -314,8 +317,10 @@ jobs:
               environment:
                 - PORT=3001
                 - REDIS_URL=redis://redis:6379
+                - MONGO_URI=mongodb://mongodb:27017/captcha_service
               depends_on:
                 - redis
+                - mongodb
               networks:
                 - captcha-network
               healthcheck:
@@ -345,6 +350,20 @@ jobs:
                 timeout: 5s
                 retries: 5
 
+            mongodb:
+              image: mongo:6.0
+              container_name: captcha-mongo
+              restart: unless-stopped
+              volumes:
+                - mongo-data:/data/db
+              networks:
+                - captcha-network
+              healthcheck:
+                test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+                interval: 10s
+                timeout: 5s
+                retries: 5
+
             nginx:
               image: nginx:alpine
               container_name: captcha-nginx
@@ -367,6 +386,8 @@ jobs:
 
           volumes:
             redis-data:
+              driver: local
+            mongo-data:
               driver: local
           EOF
 

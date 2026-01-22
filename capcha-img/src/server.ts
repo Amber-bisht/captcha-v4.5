@@ -8,10 +8,12 @@ import jwt from 'jsonwebtoken';
 
 import { createSessionMiddleware } from './config/session';
 import redisClient, { initRedis } from './config/redis';
+import { connectMongo } from './config/mongo'; // NEW
 import { fingerprintMiddleware, generateServerFingerprint, analyzeFingerprint } from './middleware/fingerprint';
 import {
   challengeRateLimiter,
   verificationRateLimiter,
+  rateLimitManager // NEW
 } from './middleware/rateLimiter';
 import { TokenService } from './utils/tokenService';
 import { BehaviorAnalyzer } from './utils/behaviorAnalyzer';
@@ -24,6 +26,8 @@ import { RiskAnalyzer } from './security/riskAnalyzer';
 import { deviceReputation } from './security/deviceReputation';
 import { SecurityLogger } from './utils/securityLogger';
 import { MetricsService } from './utils/metricsService';
+import RateLimitConfigModel from './models/RateLimitConfig';
+import AdminKeyModel from './models/AdminKey';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -58,7 +62,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Captcha-Site-Key', 'Authorization', 'X-PoW-Solution', 'X-PoW-Nonce'],
+  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'X-Captcha-Site-Key', 'Authorization', 'X-PoW-Solution', 'X-PoW-Nonce', 'x-admin-key'],
 }));
 app.use(express.json());
 app.use(cookieParser());
@@ -134,6 +138,25 @@ const botKiller = async (req: Request, res: Response, next: NextFunction) => {
 const secureImageServer = new SecureImageServer(path.join(__dirname, '../public/images'));
 const dynamicCaptchaGenerator = new DynamicCaptchaGenerator();
 const spatialGenerator = new SpatialCaptchaGenerator();
+
+// =====================================================
+// ADMIN MIDDLEWARE
+// =====================================================
+const verifyAdminKey = async (req: Request, res: Response, next: NextFunction) => {
+  const apiKey = req.headers['x-admin-key'] as string;
+  if (!apiKey) return res.status(401).json({ error: 'Missing admin key' });
+
+  // Hash provided key
+  const hashed = crypto.createHash('sha256').update(apiKey).digest('hex');
+  const validKey = await AdminKeyModel.findOne({ keyHash: hashed });
+
+  if (!validKey) {
+    SecurityLogger.warn('Invalid Admin Access Attempt', { ip: req.ip });
+    return res.status(403).json({ error: 'Invalid admin key' });
+  }
+
+  next();
+};
 
 // =====================================================
 // 1. INITIALIZE CHALLENGE (Get PoW requirements)
@@ -429,13 +452,59 @@ app.post('/api/siteverify', async (req: Request, res: Response) => {
   } catch { return res.status(400).json({ success: false, 'error-codes': ['invalid-token'] }); }
 });
 
+// =====================================================
+// ADMIN API: Update Rate Limits
+// =====================================================
+app.post('/api/admin/ratelimit', verifyAdminKey, async (req: Request, res: Response) => {
+  try {
+    const { endpoint, windowMs, maxRequests, message } = req.body;
+
+    if (!endpoint || !windowMs || !maxRequests) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    let config = await RateLimitConfigModel.findOne({ endpoint });
+    if (!config) {
+      config = new RateLimitConfigModel({ endpoint });
+    }
+
+    config.windowMs = windowMs;
+    config.maxRequests = maxRequests;
+    if (message) config.message = message;
+    config.updatedAt = new Date();
+    await config.save();
+
+    // Reload in memory
+    await rateLimitManager.reload(endpoint);
+
+    SecurityLogger.info('Rate Limit Updated', {
+      ip: req.ip,
+      type: 'admin_config_update',
+      details: { endpoint, maxRequests, windowMs }
+    });
+
+    res.json({ success: true, config });
+  } catch (error) {
+    console.error('Admin update error:', error);
+    res.status(500).json({ error: 'Update failed' });
+  }
+});
+
+// =====================================================
+// ADMIN API: List Rate Limits
+// =====================================================
+app.get('/api/admin/ratelimit', verifyAdminKey, async (req: Request, res: Response) => {
+  const configs = await RateLimitConfigModel.find({});
+  res.json({ success: true, configs });
+});
+
 app.get('/api/sitekey', (req, res) => res.json({ success: true, siteKey: CAPTCHA_SITE_KEY }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', redis: redisClient.status }));
 
 // =====================================================
 // METRICS ENDPOINT - For monitoring dashboards
 // =====================================================
-app.get('/api/metrics', async (req: Request, res: Response) => {
+app.get('/api/metrics', verifyAdminKey, async (req: Request, res: Response) => {
   try {
     const metrics = await MetricsService.getMetrics();
     const hourlyStats = await MetricsService.getHourlyStats(24);
@@ -454,7 +523,9 @@ app.get('/api/metrics', async (req: Request, res: Response) => {
 
 
 async function startServer() {
+  await connectMongo(); // Connect DB
   await initRedis();
+  await rateLimitManager.init(); // Load dynamic rates
   app.listen(PORT, () => console.log(`Hydra Anti-Bot Server running on ${PORT}`));
 }
 startServer();
