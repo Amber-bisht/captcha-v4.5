@@ -127,6 +127,14 @@ export class MetricsService {
             },
         };
     }
+    /**
+     * Get hourly statistics (placeholder for now to fix build)
+     */
+    static async getHourlyStats(hours: number): Promise<any[]> {
+        // Return empty array for now, or implement logic if needed.
+        // To strictly match expected return type in server.ts
+        return [];
+    }
 }
 
 export default MetricsService;

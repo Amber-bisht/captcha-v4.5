@@ -12,10 +12,7 @@ import {
   verificationRateLimiter,
   rateLimitManager
 } from './middleware/rateLimiter';
-import {
-  csrfTokenMiddleware,
-  csrfVerificationMiddleware,
-} from './middleware/csrf';
+
 import { TokenService } from './utils/tokenService';
 import { CaptchaGenerator } from './utils/captchaGenerator';
 import { BehaviorAnalyzer } from './utils/behaviorAnalyzer';
@@ -132,7 +129,7 @@ app.get('/captcha', challengeRateLimiter, async (req: Request, res: Response) =>
 
     res.setHeader('X-Challenge-Id', challenge.id);
     res.setHeader('X-Token', tokenResponse.token);
-    res.setHeader('X-CSRF-Token', req.csrfToken || '');
+    // res.setHeader('X-CSRF-Token', req.csrfToken || ''); // CSRF not used
     res.setHeader('X-Expires-In', tokenResponse.expiresIn.toString());
     res.setHeader('X-Session-Id', session.sessionId);
 
@@ -164,7 +161,7 @@ app.post('/verify', verificationRateLimiter, async (req: Request, res: Response)
     const sessionValidation = await sessionManager.validateTransition(sessionId, fingerprint, ip, 'init', 'verified');
 
     if (!sessionValidation.valid) {
-      await deviceReputation.recordSuspiciousActivity(fingerprint, { type: 'session_violation', details: sessionValidation.error, severity: 'high' });
+      await deviceReputation.recordSuspiciousActivity(fingerprint, { type: 'session_violation', details: sessionValidation.error || 'Unknown error', severity: 'high' });
       return res.json({ success: false, message: 'Session validation failed' });
     }
 
