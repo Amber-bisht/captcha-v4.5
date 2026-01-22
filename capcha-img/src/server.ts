@@ -189,11 +189,14 @@ app.get('/api/init', botKiller, async (req: Request, res: Response) => {
     };
 
     // ECONOMIC TAX: Datacenters/VPNs get much harder PoW
-    // Scrypt is now used for high risk, so simple difficulty adjustment logic 
-    // is replaced by RiskAnalyzer's recommendation
+    // NOTE: Scrypt disabled because browser client doesn't support it
+    // High-risk users get higher SHA-256 difficulty instead
 
-    // Generate challenge based on recommendation (sha256 or scrypt)
-    const useScrypt = risk.challengeConfig.powAlgorithm === 'scrypt';
+    // DEBUG: Log risk info
+    console.log(`[INIT] IP Risk: score=${risk.score}, level=${risk.level}`);
+
+    // ALWAYS use SHA-256 (browser compatible)
+    const useScrypt = false; // Disabled - client doesn't support scrypt
     const challengeBoundary = PoWManager.generateChallenge(
       risk.score,
       useScrypt
@@ -227,9 +230,17 @@ app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: 
   try {
     const { nonce, solution, type } = req.body;
 
+    // DEBUG: Log incoming PoW attempt
+    console.log(`[POW] Verifying: nonce=${nonce?.substring(0, 8)}..., solution=${solution}`);
+
     // Retrieve challenge params from Redis
     const challengeParams = await RedisStore.consumePoWChallenge(nonce);
-    if (!challengeParams) return res.status(403).json({ error: 'Invalid or expired nonce' });
+    if (!challengeParams) {
+      console.log(`[POW] FAIL: Nonce not found or expired`);
+      return res.status(403).json({ error: 'Invalid or expired nonce', code: 'NONCE_EXPIRED' });
+    }
+
+    console.log(`[POW] Challenge params: algo=${challengeParams.algorithm}, diff=${challengeParams.difficulty}`);
 
     // Verify PoW using stored params (algorithm, difficulty, etc.)
     const isValidPoW = PoWManager.verify(
@@ -240,7 +251,16 @@ app.post('/api/request-challenge', botKiller, challengeRateLimiter, async (req: 
       challengeParams.scryptParams
     );
 
-    if (!isValidPoW) return res.status(403).json({ error: 'Security verification failed (PoW)' });
+    if (!isValidPoW) {
+      console.log(`[POW] FAIL: Invalid solution for ${challengeParams.algorithm}`);
+      return res.status(403).json({
+        error: 'Security verification failed (PoW)',
+        code: 'POW_INVALID',
+        expected: { algorithm: challengeParams.algorithm, difficulty: challengeParams.difficulty }
+      });
+    }
+
+    console.log(`[POW] SUCCESS: Valid solution`);
 
     const serverFingerprint = generateServerFingerprint(req);
     const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0] || req.socket.remoteAddress || 'unknown';
