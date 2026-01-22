@@ -9,17 +9,19 @@ const generateKey = async () => {
     const rawKey = crypto.randomBytes(32).toString('hex');
     const hashed = crypto.createHash('sha256').update(rawKey).digest('hex');
 
-    const name = process.argv[2] || 'Default Admin Key';
+    const description = process.argv[2] || 'Default Admin Key';
 
     try {
         const newKey = await AdminKeyModel.create({
             keyHash: hashed,
-            name
+            description,
+            permissions: ['all'],
+            isActive: true
         });
 
         console.log('\n✅ Admin Key Created Successfully!');
         console.log('-----------------------------------');
-        console.log(`Name: ${newKey.name}`);
+        console.log(`Description: ${newKey.description}`);
         console.log(`KEY (SAVE THIS, IT WILL NOT BE SHOWN AGAIN):`);
         console.log(rawKey);
         console.log('-----------------------------------');
