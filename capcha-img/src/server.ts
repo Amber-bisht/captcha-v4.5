@@ -49,11 +49,10 @@ if (!JWT_SECRET) {
 app.use(helmet({ crossOriginEmbedderPolicy: false, crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(cors({
   origin: (origin, callback) => {
-    // SECURITY FIX H4: Reject requests with no origin to prevent script-based attacks
-    if (!origin) {
-      console.warn('[CORS] Blocked request with no origin');
-      return callback(new Error('Origin required'), false);
-    }
+    // SECURITY NOTE: Server-to-server requests (like from Next.js API) often lack Origin
+    // Bots can forge Origin anyway, so this check mainly hurts legitimate backend calls
+    if (!origin) return callback(null, true);
+
     if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
     return callback(new Error('CORS blocked'), false);
   },
