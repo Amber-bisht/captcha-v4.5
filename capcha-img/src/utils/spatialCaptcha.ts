@@ -62,56 +62,130 @@ export class SpatialCaptchaGenerator {
     }
 
     /**
-     * Generates a complex SVG shape that is hard for AI to "center" or "orient"
-     * Uses random paths, gradients, and overlapping elements
-     * M5 SECURITY: Marker position and style randomized to prevent pattern recognition
+     * Generates recognizable SVG objects that are easy for humans to orient
+     * but still challenging for bots due to random colors and variations
      */
     private generateComplexShape(): string {
-        // L3 SECURITY: Expanded color palette with HSL generation for maximum visual entropy
         const generateRandomColor = () => {
-            const h = Math.floor(Math.random() * 360);        // Full hue range
-            const s = 60 + Math.floor(Math.random() * 40);    // 60-100% saturation
-            const l = 45 + Math.floor(Math.random() * 25);    // 45-70% lightness
+            const h = Math.floor(Math.random() * 360);
+            const s = 60 + Math.floor(Math.random() * 40);
+            const l = 45 + Math.floor(Math.random() * 25);
             return `hsl(${h}, ${s}%, ${l}%)`;
         };
 
         const color1 = generateRandomColor();
         const color2 = generateRandomColor();
+        const color3 = generateRandomColor();
+        const cx = this.frameSize / 2;
+        const cy = this.frameSize / 2;
+
+        // Choose a random recognizable object
+        const objects = ['umbrella', 'cup', 'house', 'tree', 'rocket', 'boat', 'key', 'lightbulb', 'arrow', 'diamond'];
+        const objectType = objects[Math.floor(Math.random() * objects.length)];
 
         let svg = `<svg width="${this.frameSize}" height="${this.frameSize}" xmlns="http://www.w3.org/2000/svg">`;
-        svg += `<defs><linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:${color1};stop-opacity:1" /><stop offset="100%" style="stop-color:${color2};stop-opacity:1" /></linearGradient></defs>`;
+        svg += `<defs>
+            <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:${color1};stop-opacity:1" />
+                <stop offset="100%" style="stop-color:${color2};stop-opacity:1" />
+            </linearGradient>
+            <linearGradient id="grad2" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" style="stop-color:${color2};stop-opacity:1" />
+                <stop offset="100%" style="stop-color:${color3};stop-opacity:1" />
+            </linearGradient>
+        </defs>`;
 
-        // Add random complex paths
-        for (let i = 0; i < 5; i++) {
-            const d = `M ${Math.random() * this.frameSize} ${Math.random() * this.frameSize} 
-                       Q ${Math.random() * this.frameSize} ${Math.random() * this.frameSize} 
-                         ${Math.random() * this.frameSize} ${Math.random() * this.frameSize} 
-                       T ${Math.random() * this.frameSize} ${Math.random() * this.frameSize}`;
-            svg += `<path d="${d}" stroke="url(#grad)" fill="none" stroke-width="${Math.random() * 10 + 2}" />`;
-        }
-
-        // M5 SECURITY: Randomized "upright" marker - varies in style and position
-        const markerStyles = ['circle', 'arrow', 'triangle', 'dot'];
-        const markerStyle = markerStyles[Math.floor(Math.random() * markerStyles.length)];
-
-        // Marker angle offset - positioned near the top but with slight random offset
-        const markerX = this.frameSize / 2 + (Math.random() - 0.5) * 20;
-        const markerY = 15 + Math.random() * 15; // Between 15-30px from top
-        const markerColor = Math.random() > 0.5 ? 'white' : color1;
-
-        switch (markerStyle) {
-            case 'circle':
-                svg += `<circle cx="${markerX}" cy="${markerY}" r="${6 + Math.random() * 4}" fill="${markerColor}" stroke="black" stroke-width="2" />`;
+        switch (objectType) {
+            case 'umbrella':
+                // Umbrella - clearly upright when handle is at bottom
+                svg += `<path d="M ${cx} 30 
+                         Q ${cx - 50} 35 ${cx - 50} 65 
+                         L ${cx + 50} 65 
+                         Q ${cx + 50} 35 ${cx} 30 Z" 
+                         fill="url(#grad1)" stroke="${color3}" stroke-width="3"/>`;
+                svg += `<line x1="${cx}" y1="65" x2="${cx}" y2="115" stroke="${color3}" stroke-width="4"/>`;
+                svg += `<path d="M ${cx} 115 Q ${cx + 15} 115 ${cx + 15} 125 Q ${cx + 15} 135 ${cx + 5} 135" 
+                         fill="none" stroke="${color3}" stroke-width="4"/>`;
                 break;
+
+            case 'cup':
+                // Coffee cup with steam
+                svg += `<rect x="${cx - 25}" y="55" width="50" height="60" rx="5" fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<path d="M ${cx + 25} 65 Q ${cx + 45} 70 ${cx + 45} 85 Q ${cx + 45} 100 ${cx + 25} 105" 
+                         fill="none" stroke="${color3}" stroke-width="4"/>`;
+                // Steam
+                svg += `<path d="M ${cx - 10} 55 Q ${cx - 15} 40 ${cx - 10} 30" fill="none" stroke="${color2}" stroke-width="2"/>`;
+                svg += `<path d="M ${cx} 55 Q ${cx + 5} 35 ${cx} 25" fill="none" stroke="${color2}" stroke-width="2"/>`;
+                svg += `<path d="M ${cx + 10} 55 Q ${cx + 15} 40 ${cx + 10} 30" fill="none" stroke="${color2}" stroke-width="2"/>`;
+                break;
+
+            case 'house':
+                // Simple house
+                svg += `<polygon points="${cx},25 ${cx - 45},60 ${cx + 45},60" fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<rect x="${cx - 35}" y="60" width="70" height="60" fill="url(#grad2)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<rect x="${cx - 12}" y="85" width="24" height="35" fill="${color1}" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<circle cx="${cx + 8}" cy="103" r="3" fill="${color3}"/>`;
+                break;
+
+            case 'tree':
+                // Pine tree
+                svg += `<polygon points="${cx},20 ${cx - 40},70 ${cx + 40},70" fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<polygon points="${cx},45 ${cx - 35},90 ${cx + 35},90" fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<polygon points="${cx},70 ${cx - 30},110 ${cx + 30},110" fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<rect x="${cx - 10}" y="110" width="20" height="25" fill="#8B4513" stroke="${color3}" stroke-width="2"/>`;
+                break;
+
+            case 'rocket':
+                // Rocket ship
+                svg += `<ellipse cx="${cx}" cy="60" rx="20" ry="40" fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<polygon points="${cx},20 ${cx - 15},45 ${cx + 15},45" fill="${color2}" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<polygon points="${cx - 20},85 ${cx - 35},115 ${cx - 15},100" fill="${color3}" stroke="${color3}" stroke-width="1"/>`;
+                svg += `<polygon points="${cx + 20},85 ${cx + 35},115 ${cx + 15},100" fill="${color3}" stroke="${color3}" stroke-width="1"/>`;
+                svg += `<ellipse cx="${cx}" cy="115" rx="12" ry="8" fill="#FF4500"/>`;
+                svg += `<circle cx="${cx}" cy="55" r="8" fill="${color2}" stroke="white" stroke-width="2"/>`;
+                break;
+
+            case 'boat':
+                // Sailboat
+                svg += `<polygon points="${cx},25 ${cx},100 ${cx + 40},100" fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<line x1="${cx}" y1="25" x2="${cx}" y2="110" stroke="${color3}" stroke-width="3"/>`;
+                svg += `<path d="M ${cx - 45} 110 Q ${cx - 30} 130 ${cx} 130 Q ${cx + 30} 130 ${cx + 45} 110 Z" 
+                         fill="url(#grad2)" stroke="${color3}" stroke-width="2"/>`;
+                break;
+
+            case 'key':
+                // Key shape
+                svg += `<circle cx="${cx}" cy="40" r="20" fill="none" stroke="url(#grad1)" stroke-width="8"/>`;
+                svg += `<rect x="${cx - 4}" y="55" width="8" height="60" fill="url(#grad1)" stroke="${color3}" stroke-width="1"/>`;
+                svg += `<rect x="${cx}" y="95" width="15" height="6" fill="url(#grad1)" stroke="${color3}" stroke-width="1"/>`;
+                svg += `<rect x="${cx}" y="105" width="10" height="6" fill="url(#grad1)" stroke="${color3}" stroke-width="1"/>`;
+                break;
+
+            case 'lightbulb':
+                // Light bulb
+                svg += `<ellipse cx="${cx}" cy="55" rx="30" ry="35" fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<path d="M ${cx - 15} 85 Q ${cx - 15} 100 ${cx - 10} 105 L ${cx + 10} 105 Q ${cx + 15} 100 ${cx + 15} 85" 
+                         fill="${color2}" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<rect x="${cx - 10}" y="105" width="20" height="20" fill="${color3}" stroke="${color3}" stroke-width="1"/>`;
+                // Filament lines
+                svg += `<path d="M ${cx - 8} 50 Q ${cx} 60 ${cx + 8} 50" fill="none" stroke="${color3}" stroke-width="2"/>`;
+                break;
+
             case 'arrow':
-                svg += `<path d="M ${markerX - 8} ${markerY + 8} L ${markerX} ${markerY} L ${markerX + 8} ${markerY + 8}" stroke="${markerColor}" fill="none" stroke-width="3" />`;
+                // Upward arrow
+                svg += `<polygon points="${cx},20 ${cx - 35},70 ${cx - 15},70 ${cx - 15},130 ${cx + 15},130 ${cx + 15},70 ${cx + 35},70" 
+                         fill="url(#grad1)" stroke="${color3}" stroke-width="3"/>`;
                 break;
-            case 'triangle':
-                svg += `<polygon points="${markerX},${markerY - 8} ${markerX - 8},${markerY + 8} ${markerX + 8},${markerY + 8}" fill="${markerColor}" stroke="black" stroke-width="1" />`;
-                break;
-            case 'dot':
-                svg += `<circle cx="${markerX}" cy="${markerY}" r="4" fill="${markerColor}" />`;
-                svg += `<circle cx="${markerX}" cy="${markerY}" r="8" fill="none" stroke="${markerColor}" stroke-width="2" />`;
+
+            case 'diamond':
+                // Diamond/gem shape
+                svg += `<polygon points="${cx},25 ${cx + 40},55 ${cx + 30},60 ${cx - 30},60 ${cx - 40},55" 
+                         fill="${color2}" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<polygon points="${cx + 30},60 ${cx - 30},60 ${cx},130" 
+                         fill="url(#grad1)" stroke="${color3}" stroke-width="2"/>`;
+                svg += `<line x1="${cx}" y1="60" x2="${cx}" y2="130" stroke="${color3}" stroke-width="1"/>`;
+                svg += `<line x1="${cx - 15}" y1="60" x2="${cx}" y2="130" stroke="${color3}" stroke-width="1"/>`;
+                svg += `<line x1="${cx + 15}" y1="60" x2="${cx}" y2="130" stroke="${color3}" stroke-width="1"/>`;
                 break;
         }
 
